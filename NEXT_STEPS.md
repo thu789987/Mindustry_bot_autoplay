@@ -190,12 +190,24 @@ Python                              Server headless (subprocess)
 2. Gõ tay thử 1 lệnh `js ...setBlock(...)` xem building có xuất hiện thật
    trong game không (nếu chạy bản có đồ hoạ/join vào server bằng client thì
    thấy trực quan; headless thuần thì chỉ xác nhận qua state JSON đọc lại).
-3. Viết `bot/mod_bridge.py`: `subprocess.Popen` mở server, hàm
-   `read_state()` gửi lệnh quét + parse dòng có marker `BOT_STATE:` thành
-   dict, hàm `execute(actions)` dịch từng action trong list của
-   `plan_build()` thành lệnh `js setBlock(...)` và gửi đi.
-4. Ghép với Giai đoạn 1: `read_state()` → `bot/state.py:grid_from_state()` →
-   `bot/planner.py:plan_build()` → `execute()`.
+3. **`bot/mod_bridge.py` — đã viết, CHƯA TEST.** `MindustryServer` class:
+   `start()` mở server qua `subprocess`, `host()` gửi lệnh host, `read_state()`
+   gửi JS quét state trả về đúng schema `bot/state.py`, `execute(actions)`
+   dịch action list của `plan_build()` thành lệnh `js setBlock(...)`. Đọc kết
+   quả bằng cách tìm marker cố định (`BOT_STATE:`, `BOT_OK:`) làm chuỗi con
+   trong dòng log — cách này né được việc chưa biết chính xác định dạng mã
+   màu ANSI server in ra (xem "còn chưa chắc chắn" bên dưới).
+4. **`bot/live_run.py` — đã viết, CHƯA TEST.** Vòng lặp chat thật, ghép toàn
+   bộ: `input()` → `parse_command()` → `read_state()` →
+   `grid_from_state()` → `plan_build()` → `execute()`. Đây chính là kịch bản
+   "chat rồi bot tự xây" bạn mô tả từ đầu — chỉ còn thiếu bước chạy thật.
+
+**Việc đầu tiên cần làm khi có Java**: sửa `JAR_PATH` trong
+`bot/live_run.py` thành đường dẫn thật tới `server-release.jar` đã tải, rồi
+chạy `python bot/live_run.py`, gõ thử `"xây nhà máy silicon"`. Nếu lỗi
+timeout ở `_wait_for_marker` (`bot/mod_bridge.py`), copy nguyên log server in
+ra lúc đó gửi lại — vì đó đúng là điều "chưa chắc chắn" ở mục dưới, cần log
+thật mới sửa đúng được.
 
 #### Còn chưa chắc chắn, cần test thật mới biết (không đoán bừa)
 
