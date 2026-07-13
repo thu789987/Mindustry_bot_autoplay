@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Local copies of Anuken/Mindustry source (GPL-3.0), fetched only for looking
+# up real game constants -- not ours to redistribute. See README.md.
+reference/
