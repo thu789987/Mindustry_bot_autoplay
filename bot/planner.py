@@ -178,6 +178,22 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
             raise RuntimeError(f"không tìm được chỗ trống để đặt drill khai thác '{ore_target}'")
         x, y = spot
         actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": 0, "ore_target": ore_target})
+        new_drill = grid.place(building_type, x, y, rotation=0, ore_target=ore_target)
+
+        # Tự nối belt về core nếu map đã có core -- trước đây build drill đơn
+        # lẻ KHÔNG nối gì cả (bug thật, phát hiện khi trace thử lệnh "xây
+        # drill... và dẫn tài nguyên về nhà chính": planner chỉ đặt drill rồi
+        # dừng, im lặng bỏ qua phần "dẫn về nhà chính").
+        core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
+        if core is not None:
+            path = find_belt_path(grid, new_drill.output_tile(), core.footprint())
+            if path is None:
+                raise RuntimeError(f"đã đặt drill '{ore_target}' nhưng không tìm được đường belt nối tới core")
+            conveyor_type = CATALOG["conveyor"]
+            for bx, by, rotation in path:
+                grid.place(conveyor_type, bx, by, rotation=rotation)
+                actions.append({"op": "place", "building": "conveyor", "x": bx, "y": by, "rotation": rotation})
+
         return actions
 
     if building_type.kind != "factory":

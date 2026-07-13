@@ -21,6 +21,7 @@ BUILDING_PHRASES = {
     "máy ép than": "graphite-press",
     "graphite": "graphite-press",
     "máy khoan": "mechanical-drill",
+    "khai thác": "mechanical-drill",
     "drill": "mechanical-drill",
     "bộ lọc": "sorter",
     "sorter": "sorter",
