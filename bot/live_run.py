@@ -8,24 +8,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bot.command_parser import parse_command
+from bot.llm_parser import parse_command_auto
 from bot.mod_bridge import MindustryServer
-from bot.planner import plan_build
+from bot.planner import plan
 from bot.state import grid_from_state
 
 JAR_PATH = "server-release.jar"  # sửa thành đường dẫn thật sau khi tải về
 
+# parse_command_auto ưu tiên LM Studio (bot/llm_parser.py), tự rơi về dict
+# parser (bot/command_parser.py) nếu LM Studio chưa bật/không kết nối được
+# -- xem NEXT_STEPS.md mục "Bộ dịch lệnh bằng LM Studio" để đổi model/base_url.
+
 
 def run_command(server: MindustryServer, text: str):
-    command = parse_command(text)
-    if command.get("action") != "build":
+    command = parse_command_auto(text)
+    if command.get("action") == "unknown":
         print(f"không hiểu lệnh: {text!r}")
         return
 
     state = server.read_state()
     grid = grid_from_state(state)
     try:
-        actions = plan_build(grid, command)
+        actions = plan(grid, command)
     except (ValueError, RuntimeError) as e:
         print(f"không lập được kế hoạch: {e}")
         return

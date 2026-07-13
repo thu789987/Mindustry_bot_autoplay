@@ -87,3 +87,8 @@ class Grid:
         for tx, ty in building.footprint():
             self._by_tile[(tx, ty)] = building
         return building
+
+    def remove(self, building: PlacedBuilding):
+        for tx, ty in building.footprint():
+            if self._by_tile.get((tx, ty)) is building:
+                del self._by_tile[(tx, ty)]

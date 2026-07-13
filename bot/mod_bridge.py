@@ -93,19 +93,37 @@ class MindustryServer:
         payload = self._wait_for_marker(STATE_MARKER)
         return json.loads(payload)
 
+    def _action_js(self, action: dict) -> str:
+        x, y = action["x"], action["y"]
+        if action["op"] == "configure":
+            # BuildingComp.configureAny(Object) -- KHÁC setBlock, xem
+            # NEXT_STEPS.md mục "configure". config_type="item" hiện là
+            # loại duy nhất hỗ trợ (vd lọc sorter theo item).
+            label = f'configure@{x},{y}'
+            return (
+                f'Vars.world.tile({x},{y}).build.configureAny(Vars.content.item("{action["value"]}"));'
+                f'print("{OK_MARKER}"+"{label}")'
+            )
+
+        # op="place" hoặc "remove" -- remove chỉ là setBlock "air" (xem
+        # Blocks.java: `air = new AirBlock("air")`, Tile.java: setAir()).
+        block_name = "air" if action["op"] == "remove" else action["building"]
+        rotation = action.get("rotation", 0)
+        label = f'remove@{x},{y}' if action["op"] == "remove" else f'{action["building"]}@{x},{y}'
+        return (
+            f'Vars.world.tile({x},{y})'
+            f'.setBlock(Vars.content.block("{block_name}"), Team.sharded, {rotation});'
+            f'print("{OK_MARKER}"+"{label}")'
+        )
+
     def execute(self, actions: list) -> list:
         """Runs each planner action (see bot/planner.py) against the live
-        server. ore_target in an action is only used locally by our own
-        simulator (drill_output_rate) -- the real game infers what a drill
-        mines from the ore actually under it, so it's not sent here."""
+        server. ore_target in a "place" action is only used locally by our
+        own simulator (drill_output_rate) -- the real game infers what a
+        drill mines from the ore actually under it, so it's not sent here."""
         results = []
         for action in actions:
-            code = (
-                f'Vars.world.tile({action["x"]},{action["y"]})'
-                f'.setBlock(Vars.content.block("{action["building"]}"), Team.sharded, {action["rotation"]});'
-                f'print("{OK_MARKER}"+"{action["building"]}@{action["x"]},{action["y"]}")'
-            )
-            self.run_js(code)
+            self.run_js(self._action_js(action))
             try:
                 result = self._wait_for_marker(OK_MARKER)
                 results.append({"action": action, "ok": True, "detail": result})

@@ -4,3 +4,8 @@ __pycache__/
 # Local copies of Anuken/Mindustry source (GPL-3.0), fetched only for looking
 # up real game constants -- not ours to redistribute. See README.md.
 reference/
+
+# Per-user learned/adjusted state, not source -- generated at runtime by
+# bot/scorer.py and bot/preferences.py.
+bot/scorer_weights.json
+bot/preferences.json
