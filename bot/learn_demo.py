@@ -28,7 +28,10 @@ FAKE_STATE = {
 
 
 def resolve_context(grid, building_type):
-    sources = [(item, find_producer(grid, item).output_tile()) for item in building_type.recipe.inputs]
+    # sources: (item_name, producer_building) -- featurize_target_spot() gọi
+    # producer.output_tile() nội bộ (xem bot/planner.py), khớp contract dùng
+    # chung với _find_or_build_factory_sources().
+    sources = [(item, find_producer(grid, item)) for item in building_type.recipe.inputs]
     core = next(b for b in grid.unique_buildings() if b.type.kind == "core")
     return sources, (core.x, core.y)
 

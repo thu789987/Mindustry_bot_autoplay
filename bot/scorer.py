@@ -12,9 +12,13 @@ WEIGHTS_PATH = Path(__file__).resolve().parent / "scorer_weights.json"
 
 # Mặc định: ưu tiên belt ngắn, không quan tâm khoảng cách core (dấu âm vì
 # "lớn hơn" ở 2 đặc trưng này là xấu hơn -> điểm thấp hơn).
+# drill_tier âm -> mặc định chọn tier RẺ NHẤT đủ dùng (khớp hành vi
+# select_drill_type() khi scorer=None), user chê "rẻ quá" nhiều lần sẽ dịch
+# trọng số này dương dần, tự nghiêng sang tier cao hơn cho tình huống tương tự.
 DEFAULT_WEIGHTS = {
     "total_belt_length": -1.0,
     "distance_to_core": 0.0,
+    "drill_tier": -1.0,
 }
 
 

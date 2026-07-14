@@ -6,8 +6,10 @@ from .buildings import DIRECTIONS, BuildingType
 
 @dataclass
 class Tile:
-    # real Mindustry ore tiles are binary (present or not) -- no density/amount
+    # real Mindustry ore/liquid tiles are binary (present or not) -- no
+    # density/amount modeled, see README limitations
     ore: Optional[str] = None
+    liquid: Optional[str] = None
     buildable: bool = True
 
 
@@ -20,7 +22,10 @@ class PlacedBuilding:
     x: int
     y: int
     rotation: int = 0        # facing/output direction, see DIRECTIONS
-    ore_target: Optional[str] = None  # for drills: which ore type to mine
+    ore_target: Optional[str] = None      # for drills: which ore type to mine
+    liquid_target: Optional[str] = None   # for pumps: which liquid to pump
+    filter_item: Optional[str] = None     # for sorters/unloaders: configured via configureAny(), see Sorter.java sortItem
+    link_target: Optional["PlacedBuilding"] = None  # for bridges/mass-drivers: linked partner, see ItemBridge.java/MassDriver.java `link`
 
     def footprint(self):
         s = self.type.size
@@ -41,6 +46,11 @@ class PlacedBuilding:
     def output_tile(self):
         return self._edge_tile(self.rotation)
 
+    def input_tile(self):
+        # tile "phía sau" (ngược hướng rotation) -- dùng cho unloader
+        # (Unloader.java back()/front()): rút từ input_tile(), đẩy ra output_tile().
+        return self._edge_tile((self.rotation + 2) % 4)
+
 
 class Grid:
     def __init__(self, width: int, height: int):
@@ -54,6 +64,9 @@ class Grid:
 
     def set_ore(self, x, y, ore):
         self.tiles[y][x].ore = ore
+
+    def set_liquid(self, x, y, liquid):
+        self.tiles[y][x].liquid = liquid
 
     def building_at(self, x, y):
         return self._by_tile.get((x, y))
@@ -80,10 +93,10 @@ class Grid:
                     return False
         return True
 
-    def place(self, building_type: BuildingType, x, y, rotation=0, ore_target=None):
+    def place(self, building_type: BuildingType, x, y, rotation=0, ore_target=None, liquid_target=None, filter_item=None, link_target=None):
         if not self.can_place(building_type, x, y):
             raise ValueError(f"cannot place {building_type.name} at ({x},{y})")
-        building = PlacedBuilding(building_type, x, y, rotation, ore_target)
+        building = PlacedBuilding(building_type, x, y, rotation, ore_target, liquid_target, filter_item, link_target)
         for tx, ty in building.footprint():
             self._by_tile[(tx, ty)] = building
         return building
