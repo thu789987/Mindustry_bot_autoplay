@@ -137,7 +137,24 @@ def _trace_branching(grid: Grid, pos, capacity, belt_kind: str, item_name=None, 
         # thường -- không giới hạn capacity (giống cách conduit đã xấp xỉ
         # base_rate=inf, nghẽn thật nằm ở nơi khác, không phải ở cầu).
         if b.link_target is None:
-            return [(b, capacity)]  # cầu chưa link -- coi như điểm dừng
+            # SỬA: trước đây coi bridge chưa link là "điểm dừng hẳn" (kẹt tại
+            # chỗ) -- SAI. ItemBridge.java thật (updateTile(), xem
+            # NEXT_STEPS.md): khi hadValidLink=false, gọi doDump() -- hành vi
+            # dump TIÊU CHUẨN ra Ô LIỀN KỀ vật lý, giống hệt mọi building
+            # khác, KHÔNG bị kẹt. Xấp xỉ đúng bằng công thức y hệt router
+            # (chia đều capacity cho các neighbor hợp lệ, không phải
+            # round-robin theo thời gian thật như game, nhưng ở trạng thái ổn
+            # định trung bình ra kết quả tương đương).
+            neighbors = [
+                (x + dx, y + dy) for dx, dy in DIRECTIONS
+                if (x + dx, y + dy) != came_from and grid.in_bounds(x + dx, y + dy)
+                and grid.building_at(x + dx, y + dy) is not None
+            ]
+            n = len(neighbors) or 1
+            results = []
+            for nxt in neighbors:
+                results.extend(_trace_branching(grid, nxt, capacity / n, belt_kind, item_name, came_from=pos))
+            return results
         # Dùng output_tile() (tính theo size thật) chứ không phải (x,y) gốc +
         # 1 bước -- bug thật đã gặp: với building size>1, x+dx vẫn còn nằm
         # TRONG chân đế của chính link_target, khiến trace quay lại đúng
@@ -288,6 +305,140 @@ def _unloader_output_rate(grid: Grid, b: PlacedBuilding):
     return b.type.base_rate
 
 
+def _power_capable(b: PlacedBuilding) -> bool:
+    """Building tham gia mạng điện: generator (sản xuất), power-node (chỉ
+    truyền, không tự sản xuất/tiêu thụ), hoặc bất kỳ building nào cần điện
+    (power_input > 0, vd laser-drill/blast-drill/silicon-smelter thật --
+    xem Blocks.java consumePower())."""
+    return b.type.kind in ("generator", "power-node") or b.type.power_input > 0
+
+
+def _power_linked(a: PlacedBuilding, b: PlacedBuilding) -> bool:
+    """Xấp xỉ PowerNode.overlaps(): 2 building có điện được nối KHÔNG DÂY nếu
+    (1) chân đế chạm nhau trực tiếp (giống cách building thường "bắt tay"
+    không cần belt ở giữa, xem output_tile()/touches_target), hoặc (2) 1
+    trong 2 là power-node và building kia nằm trong bán kính `power_range`
+    (số ô, xem PowerNode.java laserRange) tính từ tâm node -- dùng khoảng
+    cách Euclidean gần đúng hình tròn thật, không phải hình chữ nhật/tia
+    laser chính xác như game gốc."""
+    a_tiles = a.footprint()
+    b_set = set(b.footprint())
+    for ax, ay in a_tiles:
+        for ddx, ddy in DIRECTIONS:
+            if (ax + ddx, ay + ddy) in b_set:
+                return True
+
+    for node, other in ((a, b), (b, a)):
+        if node.type.kind != "power-node":
+            continue
+        ncx = node.x + node.type.size / 2.0
+        ncy = node.y + node.type.size / 2.0
+        for ox, oy in other.footprint():
+            dist = ((ox + 0.5 - ncx) ** 2 + (oy + 0.5 - ncy) ** 2) ** 0.5
+            if dist <= node.type.power_range:
+                return True
+    return False
+
+
+def _build_power_networks(buildings):
+    """Union-Find over building có điện -- trả về {id(building): network_id}.
+    Không mô phỏng maxNodes (giới hạn số link/node thật) hay battery (lưu
+    trữ làm mượt biến động ngắn hạn) -- simulator này tính TRUNG BÌNH ổn
+    định, battery không đổi kết quả trung bình dài hạn, chỉ đổi biến động
+    tức thời (xem NEXT_STEPS.md)."""
+    capable = [b for b in buildings if _power_capable(b)]
+    parent = {id(b): id(b) for b in capable}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(len(capable)):
+        for j in range(i + 1, len(capable)):
+            if _power_linked(capable[i], capable[j]):
+                union(id(capable[i]), id(capable[j]))
+
+    return {id(b): find(id(b)) for b in capable}
+
+
+def _generator_power_rate(b: PlacedBuilding, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
+    """Xấp xỉ ConsumeGenerator.java: chọn nhiên liệu cháy tốt nhất (flammability
+    cao nhất) trong số item được belt dẫn tới, giới hạn bởi tốc độ đốt tối đa
+    (1 item mỗi item_duration tick) và nguồn cung thật, cùng nguồn liquid đi
+    kèm nếu có (vd nước cho steam-generator) -- công thức giống hệt cycle_rate
+    của factory thường trong evaluate_layout, chỉ khác input là "bất kỳ item
+    đủ flammability" thay vì 1 item cố định."""
+    best_flammability = 0.0
+    best_rate = 0.0
+    for src, cap in in_edges.get(b, []):
+        item = ITEMS.get(produced_item(src))
+        if item is None or item.flammability < b.type.min_flammability:
+            continue
+        rate = min(output_rate.get(id(src), 0.0) / branch_count[src], cap)
+        if rate > 0 and item.flammability > best_flammability:
+            best_flammability = item.flammability
+            best_rate = rate
+
+    if best_flammability <= 0 or b.type.item_duration <= 0:
+        return 0.0
+
+    max_cycle_rate = TICKS_PER_SECOND / b.type.item_duration
+    cycle_rate = min(max_cycle_rate, best_rate)
+
+    for liquid_name, amount_per_cycle in b.type.generator_liquid_inputs.items():
+        available = sum(
+            min(liquid_output_rate.get(id(src), 0.0) / liquid_branch_count[src], cap)
+            for src, cap in liquid_in_edges.get(b, [])
+            if produced_liquid(src) == liquid_name
+        )
+        if amount_per_cycle > 0:
+            cycle_rate = min(cycle_rate, available / amount_per_cycle)
+
+    if cycle_rate <= 0:
+        return 0.0
+    return TICKS_PER_SECOND * b.type.power_production * best_flammability * (cycle_rate / max_cycle_rate)
+
+
+def _power_satisfaction(buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
+    """Xem PowerGraph.java getSatisfaction(): satisfaction = clamp(production/needed).
+    Trả về (networks, satisfaction) -- networks: {id(building): network_id},
+    satisfaction: {network_id: 0..1}. KHÔNG lặp lại (không giống game thật
+    hội tụ qua nhiều tick): production/consumption tính 1 lần từ throughput
+    ổn định đã có, đủ cho mục đích lập kế hoạch (xem NEXT_STEPS.md)."""
+    networks = _build_power_networks(buildings)
+    production = defaultdict(float)
+    consumption = defaultdict(float)
+    for b in buildings:
+        net = networks.get(id(b))
+        if net is None:
+            continue
+        if b.type.kind == "generator":
+            production[net] += _generator_power_rate(
+                b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
+            )
+        if b.type.power_input > 0:
+            consumption[net] += b.type.power_input
+
+    satisfaction = {}
+    for net in set(networks.values()):
+        need = consumption.get(net, 0.0)
+        prod = production.get(net, 0.0)
+        if need <= 0:
+            satisfaction[net] = 1.0
+        elif prod <= 0:
+            satisfaction[net] = 0.0
+        else:
+            satisfaction[net] = min(1.0, prod / need)
+    return networks, satisfaction
+
+
 def evaluate_layout(grid: Grid):
     """Compute steady-state material throughput reaching the core.
 
@@ -370,6 +521,35 @@ def evaluate_layout(grid: Grid):
         compute(b, set())
         compute_liquid(b)
 
+    # Mạng điện: tính SAU khi mọi throughput item/liquid ổn định đã có (không
+    # lặp lại nhiều vòng như game thật hội tụ theo tick -- xem
+    # _power_satisfaction), rồi NHÂN LẠI vào output_rate/liquid_output_rate
+    # của building cần điện (power_input > 0). Đây là hậu xử lý 1 lần, KHÔNG
+    # lan ngược lại cho các building khác phụ thuộc vào building bị thiếu
+    # điện đó (vd factory B nhận input từ drill A đang thiếu điện sẽ không tự
+    # động thấy input giảm theo) -- xấp xỉ đơn giản hoá, ghi rõ trong
+    # NEXT_STEPS.md, đủ dùng để phát hiện "building X sẽ chạy dưới công suất
+    # vì thiếu điện" mà không cần mô phỏng lặp hội tụ đầy đủ.
+    power_networks, power_sat_by_network = _power_satisfaction(
+        buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
+    )
+    power_satisfaction: dict[int, float] = {}
+    for b in buildings:
+        if b.type.power_input <= 0:
+            continue
+        net = power_networks.get(id(b))
+        sat = power_sat_by_network.get(net, 0.0) if net is not None else 0.0
+        power_satisfaction[id(b)] = sat
+        if b.type.kind == "pump":
+            liquid_output_rate[id(b)] *= sat
+        else:
+            output_rate[id(b)] *= sat
+
+    power_production = {
+        b: _generator_power_rate(b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate)
+        for b in buildings if b.type.kind == "generator"
+    }
+
     core = next((b for b in buildings if b.type.kind == "core"), None)
     score = output_rate.get(id(core), 0.0) if core else 0.0
 
@@ -379,4 +559,6 @@ def evaluate_layout(grid: Grid):
         "liquid_connections": liquid_connections,
         "output_rate": {b: output_rate[id(b)] for b in buildings},
         "liquid_output_rate": {b: liquid_output_rate[id(b)] for b in buildings},
+        "power_satisfaction": {b: power_satisfaction[id(b)] for b in buildings if id(b) in power_satisfaction},
+        "power_production": power_production,
     }

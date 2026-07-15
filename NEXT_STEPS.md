@@ -309,11 +309,10 @@ tài nguyên" đã có — không phải thêm vài dòng, mỗi cái là 1 proj
   Cần: dữ liệu hướng spawn địch trên map (chưa có trong state schema hiện
   tại), thuật toán tối ưu vùng phủ (khác hẳn BFS/ring-search đang dùng).
   Đạn dược (ammo) thì CÓ THỂ tái dùng auto-connect belt sau khi đã đặt.
-- **Power** (category `power`) — nối bằng **phạm vi không dây** (2 power
-  node trong tầm nhau tự nối), không qua belt/conduit. Cần: đồ thị theo
-  khoảng cách (khác hẳn BFS theo tile), cân bằng cung-cầu điện trên đồ thị.
-  Nhiều factory thật cần điện (`hasPower`/`consumePower`) mà simulator hiện
-  bỏ qua hoàn toàn — chỉ đáng làm sau khi có phần lưới điện này.
+- ~~**Power**~~ — **ĐÃ LÀM** (generator + mạng điện phạm vi không dây), xem
+  mục "Mạng điện" bên dưới. `battery`/`power-node`/`power-node-large`/
+  `surge-tower` vẫn còn 230 building khác trong `GENERATED_OTHER` chưa có
+  logic đặt riêng (turret/logic/unit dưới đây vẫn y nguyên).
 - **Logic** (category `logic`) — configure() của logic-processor nhận
   **code MLOG** (ngôn ngữ lập trình riêng của game) làm value, không phải
   Item như sorter. Đây là bài toán "sinh chương trình", khác hẳn "chọn 1
@@ -993,6 +992,40 @@ là dùng được, không phải toàn bộ gameplay Erekir.
   của game thật (`findLink()`), planner luôn quyết định link tại thời điểm
   lập kế hoạch.
 
+### Bug thật thứ 4 -- phát hiện khi người dùng phản biện đúng 1 kết luận trước đó
+
+Đang giải mã 1 schematic thật (`.msch`, xem mục dưới) và tìm thấy 1 vài
+`bridge-conveyor` có link config trỏ ra ngoài phạm vi hợp lệ (rác/lỗi thời,
+xem mục dưới) — tôi kết luận "bridge chưa link = kẹt tại chỗ, item không đi
+đâu cả" và code `sim.py` lúc đó ĐÚNG LÀ làm vậy (`if b.link_target is None:
+return [(b, capacity)]` — coi bridge là điểm dừng). Người dùng phản biện:
+"Bridge có 1 tính năng, nếu không nối với bất cứ bridge khác nào thì sẽ tự
+động chia item ra các đầu còn lại" — tra lại `ItemBridge.java` xác nhận
+người dùng ĐÚNG, code cũ SAI:
+
+```java
+// updateTile()
+hadValidLink = linkValid(tile, other);
+if(!hadValidLink){
+    doDump();   // <-- dump ra Ô LIỀN KỀ vật lý như building bình thường!
+    warmup = 0f;
+}
+```
+
+`doDump()`/`dumpAccumulate()` là cơ chế dump chuẩn mọi building không có
+hướng cố định đều dùng — bridge chưa link (hoặc link hỏng) KHÔNG kẹt, nó chỉ
+đơn giản cư xử như 1 building bình thường, đẩy item ra ô kề cạnh vật lý. Đã
+sửa `sim.py`: `kind=="bridge"` khi `link_target is None` giờ dùng ĐÚNG công
+thức chia đều capacity cho các neighbor hợp lệ (giống hệt `router`), thay vì
+coi là điểm dừng. Xem `bot/bridge_demo.py` "Đối chứng 2" — bridge chưa link
+nhưng có core kề bên vẫn tự dump ra core thành công.
+
+**Bài học quy trình:** đây là lần đầu trong phiên mà NGƯỜI DÙNG phát hiện ra
+lỗi trong 1 cơ chế mà tôi tự tin đã "tra source xong" — vì tôi tra đúng phần
+config/link nhưng KHÔNG tra phần xử lý khi thiếu link (`updateTile()`'s
+`!hadValidLink` branch). Nhắc lại nguyên tắc: tra source phải bao trùm hết
+NHÁNH LOGIC liên quan, không chỉ nhánh "happy path" (có link hợp lệ).
+
 **Chưa nối vào command_parser.py/plan_build** (giống hệt tình trạng ban đầu
 của Router/Sorter trước khi có `plan_split`/`plan_filter_split` — gọi trực
 tiếp qua `grid.place()`/test script, không qua câu chat): "than đi thẳng vào
@@ -1014,11 +1047,208 @@ nhờ kiến trúc phân loại theo kind. 1 bug đệ quy vô hạn thật (Rec
 dùng `output_tile()` thay vì `(x,y)` gốc + 1 bước khi teleport qua link, vì
 building size>1 khiến bước nhảy cũ vẫn còn nằm trong chân đế chính nó.
 
+## Mạng điện (generator + power-node) -- trả lời câu hỏi "xây nhà máy điện có đầu vào than+nước"
+
+Trước đây: `steam-generator` (đúng loại nhà máy điện dùng than+nước người
+dùng hỏi) đã có tên trong catalog nhưng `plan_build()` từ chối đặt ("chưa hỗ
+trợ xây... thuộc nhóm 'power'") vì 2 lý do riêng biệt: (1) cơ chế tiêu thụ
+"bất kỳ item cháy được" (`ConsumeItemFlammable.java`) không khớp `Recipe`
+dataclass (giả định input CỐ ĐỊNH), (2) hoàn toàn chưa có mô hình mạng điện
+(cân bằng cung/cầu công suất). Cả 2 đã làm.
+
+### Đã làm
+
+- **`simulator/buildings.py`**: `Item.flammability` (mới), `BuildingType`
+  thêm `power_production`/`item_duration`/`min_flammability`/
+  `generator_liquid_inputs` (generator), `power_input` (building cần điện),
+  `power_range` (power-node).
+- **`tools/generate_catalog.py`**: parse `flammability` từ `Items.java`
+  (than=1.0, cao nhất). `GENERATOR_CLASSES={"ConsumeGenerator"}` -- CHỈ nhận
+  block dùng đúng `ConsumeItemFlammable` (combustion-generator,
+  steam-generator); generator khác cơ chế (thermal-generator dựa nhiệt độ
+  tile, differential-generator dựa chênh lệch nhiệt 2 liquid,
+  chemical-combustion-chamber, pyrolysis-generator, rtg-generator) bị SKIP
+  rõ ràng, không đoán. `POWER_NODE_CLASSES={"PowerNode"}` (power-node,
+  power-node-large, surge-tower) -- parse `laserRange`. Thêm parse
+  `consumePower(X)` cho drill/factory/pump đã hiểu cơ chế từ trước (phát
+  hiện: **hầu hết factory thật cần điện** -- silicon-smelter, multi-press,
+  pulverizer, plastanium-compressor, phase-weaver, slag-centrifuge,
+  surge-smelter, kiln, blast-mixer, pyratite-mixer đều có `consumePower()`
+  trong source thật, chỉ graphite-press/silicon-arc-furnace không cần; và
+  laser-drill/blast-drill tier 4-5 cũng cần điện, mechanical-drill/
+  pneumatic-drill thì không).
+- **`simulator/sim.py`**:
+  - `_generator_power_rate()`: chọn nhiên liệu flammability CAO NHẤT trong
+    số item belt dẫn tới (đủ `min_flammability`), giới hạn bởi tốc độ đốt
+    tối đa (`60/item_duration`) và nguồn cung thật + liquid đi kèm nếu có
+    (steam-generator cần nước) -- công thức tái dùng nguyên `cycle_rate`
+    pattern của factory thường.
+  - `_power_capable()`/`_power_linked()`/`_build_power_networks()`: Union-
+    Find dựng mạng điện -- 2 building có điện nối nhau nếu CHẠM TRỰC TIẾP
+    (chân đế kề nhau, không cần belt) hoặc 1 trong 2 là power-node và cái
+    kia nằm trong bán kính `power_range` (xấp xỉ hình tròn Euclidean, không
+    phải tia laser/hình chữ nhật chính xác như game thật -- xem
+    `PowerNode.java overlaps()`).
+  - `_power_satisfaction()`: `satisfaction = min(1, production/needed)` mỗi
+    mạng (đúng công thức `PowerGraph.java getSatisfaction()` thật). Nhân lại
+    vào `output_rate`/`liquid_output_rate` của building cần điện SAU KHI đã
+    tính xong throughput item/liquid bình thường (hậu xử lý 1 lần, KHÔNG lặp
+    hội tụ nhiều tick như game thật, KHÔNG lan ngược ảnh hưởng lên building
+    khác phụ thuộc -- xấp xỉ đơn giản hoá, xem "Xấp xỉ" bên dưới).
+  - `evaluate_layout()` trả thêm `"power_satisfaction"` và
+    `"power_production"` trong kết quả.
+- **`bot/planner.py`**: `_ensure_powered()` -- nếu building cần điện
+  (`power_input>0`) nhưng mạng điện chưa đủ (kiểm bằng `evaluate_layout()`
+  thật, không đoán), tự đặt 1 `combustion-generator` (đốt than, rẻ nhất) +
+  drill than MỚI RIÊNG (không tái dùng producer có sẵn -- xem "Bug thật"
+  bên dưới) + 1 `power-node` cạnh building. Gọi tự động trong `plan_build`'s
+  factory branch và `_resolve_split_destination` (khi 1 factory được tự đặt
+  làm đích split/filter_split).
+
+### Xấp xỉ đã áp dụng (ghi rõ, không phải hành vi 100% thật)
+
+- Mạng điện tính **1 lần duy nhất** dựa trên throughput item/liquid ổn định
+  đã có, KHÔNG lặp hội tụ nhiều tick như game thật (battery làm mượt biến
+  động ngắn hạn -- không ảnh hưởng trung bình dài hạn nên bỏ qua, khớp triết
+  lý "tính trạng thái ổn định" xuyên suốt simulator này).
+  - Hệ quả cụ thể: nếu building A thiếu điện chạy dưới công suất, building B
+    nhận input TỪ A sẽ KHÔNG tự động thấy input giảm theo (chỉ A bị giảm
+    output, B vẫn tính dựa trên throughput "danh nghĩa" của A trước khi bị
+    điện làm giảm). Game thật hội tụ qua nhiều tick nên B cũng bị ảnh hưởng
+    dây chuyền; đây là giới hạn 1-pass, chưa lặp lại.
+- `_power_linked()` xấp xỉ vùng phủ power-node bằng hình tròn Euclidean từ
+  TÂM node, không phải thuật toán chính xác của `PowerNode.overlaps()`
+  (circle-vs-rect thật). Đủ chính xác cho việc lập kế hoạch (đặt node có
+  trong tầm hay không), có thể sai lệch ở biên rất sát ranh giới tầm.
+  Không mô phỏng `maxNodes` (giới hạn số link/1 node).
+- `_ensure_powered()` LUÔN tự đặt drill than MỚI cho generator, không tái sử
+  dụng nguồn than có sẵn trên map dù có -- **bug thật phát hiện khi test**:
+  tái dùng producer có sẵn (`find_producer(grid,"coal")`) có thể trả về
+  ĐÚNG drill đang là NGUỒN của lệnh split/build hiện tại, router của nó đã
+  dùng hết 4 ô kề cho các nhánh khác, dẫn tới lỗi "không tìm được đường belt
+  từ router tới đích thứ 2" (tranh chấp router). Đánh đổi: có thể dư 1 drill
+  than nếu bản đồ đã có sẵn nguồn than khác, chấp nhận được để tránh độ phức
+  tạp tranh chấp router.
+- `_ensure_powered()` chỉ cấp đủ điện cho **1 building vừa xây**, KHÔNG tự
+  suy luận/tối ưu lưới điện cho toàn bộ map nhiều building cùng lúc (vd
+  không tự "thấy" 1 generator đã dư công suất ở nơi khác trên map và bắc
+  cầu tới đó thay vì xây generator mới) -- việc đó là bài toán tối ưu lưới
+  điện toàn cục, ngoài phạm vi 1 lượt thêm tính năng.
+- KHÔNG mô phỏng `maxNodes`, `battery` (lưu trữ), hay việc generator/building
+  có thể bị NỔ khi quá nhiệt/thiếu điện kéo dài (`explosionDamage` trong
+  `PowerGenerator.java`) -- chỉ quan tâm throughput trung bình ổn định.
+
+### `plan_build()` hỗ trợ xây generator TRỰC TIẾP (không chỉ tự động qua `_ensure_powered`)
+
+Câu hỏi gốc "xây nhà máy điện có đầu vào là than và nước" là lệnh xây
+generator LÀM CHÍNH, không phải 1 factory khác cần điện -- cần nhánh riêng
+trong `plan_build()` (khác `_ensure_powered()`, vốn chỉ tự động chèn generator
+khi 1 building KHÁC cần điện). Đã thêm nhánh `kind=="generator"`: tự đặt
+generator, tự đặt drill than (mặc định, flammability cao nhất) + belt, tự
+đặt pump cho MỌI liquid trong `generator_liquid_inputs` (steam-generator cần
+nước) + conduit. `bot/command_parser.py` thêm phrase: "nhà máy điện"/"máy
+phát điện" → `combustion-generator` (mặc định rẻ nhất, giống "máy khoan"
+mặc định tier rẻ), "nhà máy điện hơi nước"/"nhà máy hơi nước" →
+`steam-generator` (cần nói RÕ "hơi nước" mới chọn đúng loại cần nước --
+dict KHÔNG đọc được "có đầu vào là than và nước" trong câu để tự suy luận,
+xem `bot/power_plant_build_demo.py` chứng minh cả 2 trường hợp).
+`bot/llm_parser.py` SUPPORTED_KINDS thêm "generator"/"power-node" (LLM
+không bị giới hạn cách nói cố định như dict, có thể tự suy luận đúng loại
+generator từ mô tả input).
+
+### Đã test (`bot/power_generator_demo.py`, `bot/power_network_demo.py`, `bot/power_plant_build_demo.py`)
+
+- steam-generator: than đủ nhưng KHÔNG đủ đốt hết công suất → công suất tỉ
+  lệ đúng phần trăm (không phải bật/tắt nhị phân); cắt nước → 0 điện dù có
+  than (cần ĐỦ CẢ 2, không phải trung bình cộng); combustion-generator
+  (không cần nước) → chạy được chỉ với than.
+- laser-drill (cần điện) không có generator nào → 0/s dù ore/tier đủ điều
+  kiện (khác hẳn hành vi TRƯỚC khi có power model — luôn chạy miễn phí).
+  Generator CHẠM TRỰC TIẾP → chạy được không cần node. Generator XA (không
+  chạm), power-node bắc cầu đúng bán kính laserRange → chạy được; chưa có
+  node → vẫn 0/s (chứng minh mạng điện thật sự cần trong tầm, không phải
+  "có generator ở đâu đó trên map là đủ").
+- `bot/example_run.py`/`bot/learn_demo.py` (silicon-smelter, câu hỏi gốc từ
+  đầu dự án) cập nhật lại để có đủ 2 mỏ than (1 cho drill chính, 1 cho
+  combustion-generator tự động) -- silicon-smelter giờ output đúng bằng số
+  cũ trước khi có power model (0.2/s), xác nhận satisfaction=1.0 (đủ điện
+  hoàn toàn) khi `_ensure_powered()` tự cấp đúng.
+
 ### Chạy thử lại (không cần Java)
 
 ```
 $env:PYTHONIOENCODING="utf-8"; python mindustry-factory-ai/bot/example_run.py
 $env:PYTHONIOENCODING="utf-8"; python mindustry-factory-ai/bot/learn_demo.py
+$env:PYTHONIOENCODING="utf-8"; python mindustry-factory-ai/bot/power_generator_demo.py
+$env:PYTHONIOENCODING="utf-8"; python mindustry-factory-ai/bot/power_network_demo.py
+$env:PYTHONIOENCODING="utf-8"; python mindustry-factory-ai/bot/log_learning_demo.py
 ```
 (set `PYTHONIOENCODING` vì console Windows mặc định không phải UTF-8, tiếng
 Việt sẽ báo lỗi encoding nếu không set trước.)
+
+## Học từ log gameplay thật (`bot/log_learning.py`)
+
+Trả lời câu hỏi: "nếu tôi chơi, ghi log lại, bot có tự học được không" — CÓ,
+nhưng chỉ tự động hoá đúng phần `bot/scorer.py` đã có (chọn VỊ TRÍ đặt
+factory), không phải "học chơi game" theo nghĩa lớn (đã bàn kỹ trong hội
+thoại, cố ý không xây theo hướng train model riêng).
+
+### Format log
+
+Dùng LẠI đúng format `actions` mà `plan()`/`plan_build()` đã emit từ đầu dự
+án (`{"op":"place"|"remove"|"configure"|"rotate", "building":..., "x":...,
+"y":..., ...}`) — không có format riêng. Cách tạo log này từ game thật: mod
+bắt sự kiện `BlockBuildEndEvent`/`ConfigEvent`/`BuildRotateEvent` (tra thật
+từ `EventType.java`, xem đoạn hội thoại về "cách tạo log trong Mindustry") —
+CHƯA viết mod này (cần Java, cùng điều kiện chưa đáp ứng như
+`bot/mod_bridge.py` từ đầu dự án).
+
+### Cơ chế `extract_feedback_from_log()`
+
+1. Với mỗi hành động "place" 1 **factory** (loại DUY NHẤT plan_build() dùng
+   scorer để chọn vị trí trong nhiều candidate — drill/pump chọn theo mỏ
+   gần nhất, không qua scorer nên không tạo được cặp so sánh): hỏi
+   `plan_build()` xem bot sẽ đề xuất đặt ở đâu NẾU chưa biết bạn chọn gì,
+   ghi lại để so với vị trí bạn THỰC SỰ chọn.
+2. Phát lại HẾT log xong, kiểm building đó **cuối cùng có thực sự sản xuất
+   được gì không** (`evaluate_layout()["output_rate"] > 0`) — chỉ building
+   "sống" (nối đủ input+output) mới tạo cặp so sánh cho
+   `bot/feedback.py:record_feedback()`.
+
+### Bug thiết kế thật -- phát hiện ngay khi tự test (trước khi báo cho người dùng)
+
+Bản đầu tiên lọc bằng cách so `evaluate_layout()["score"]` NGAY TRƯỚC/SAU
+đúng 1 dòng "place" — chạy demo thật thì LUÔN ra 0 cặp feedback, dù rõ ràng
+bot đề xuất khác vị trí người chơi chọn. Nguyên nhân: đặt building + nối
+belt/điện cho nó thật ra là **NHIỀU dòng log tách biệt** (place building ->
+place belt input -> place belt output -> place generator điện...) — dòng
+"place" một mình gần như luôn cho điểm 0->0 vì CHƯA nối gì cả, không phản
+ánh được kết quả CUỐI CÙNG của cả chuỗi hành động. Sửa: đổi sang kiểm
+production tại thời điểm **cuối log** (sau khi mọi belt/điện đã nối xong)
+thay vì so lệch trên 1 dòng riêng lẻ — xem `_apply_action`/vòng lặp 2 giai
+đoạn trong `extract_feedback_from_log()`.
+
+### Đã test (`bot/log_learning_demo.py`)
+
+Dùng LẠI chính kịch bản đã xác nhận đúng trong `bot/learn_demo.py` (chê
+(4,7), thích (3,6)) làm "đáp án đúng" để kiểm tra, thay vì đoán kết quả mới:
+dựng 1 log giả lập (chưa có mod ghi log thật) bằng cách tái dùng nguyên các
+hàm nội bộ đã kiểm chứng của `planner.py` (`_route`/`_connect_to_core`/
+`_ensure_powered`) để tự nối belt+điện cho silicon-smelter tại (3,6), mô
+phỏng đúng 1 người chơi đặt xong rồi tự nối tiếp. Kết quả: `extract_feedback_from_log()`
+tự tạo đúng 1 cặp feedback, sau khi áp dụng thì `plan_build()` đề xuất lại
+CHÍNH XÁC (3,6) — khớp trọng số `distance_to_core: 0.0 -> 1.0` y hệt
+`learn_demo.py` (học thủ công), chứng minh pipeline tự động cho ra đúng kết
+quả như phản hồi tự tay.
+
+### Giới hạn (ghi rõ)
+
+- Chỉ áp dụng cho factory — drill/pump/generator không đi qua đường chọn có
+  scorer.
+- Chỉ xét được nếu MỌI input item của factory đó đã có producer SẴN trên map
+  tại thời điểm đó trong log (không tự đoán/đặt thêm nguồn).
+- Suy luận NGẦM ("bạn xây ở đâu = bạn thích chỗ đó"), không phải phản hồi
+  CHỦ ĐỘNG như `record_feedback()` vốn thiết kế cho — bộ lọc "có sản xuất
+  được không" giảm nhiễu (loại xây tạm/xây rồi phá) nhưng không loại bỏ hết
+  khả năng học nhầm từ 1 lựa chọn ngẫu nhiên lúc chơi mà vẫn tình cờ hoạt
+  động được.

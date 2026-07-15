@@ -31,15 +31,34 @@ assert result["output_rate"][core] > 0, "SAI: item phải nhảy qua bridge tớ
 print("  ĐÚNG: item nhảy từ bridge_a qua bridge_b (bỏ qua khoảng trống giữa),")
 print("  rồi tiếp tục ra core -- đúng cơ chế ItemBridge.java thật.\n")
 
-print("=== Đối chứng: bridge CHƯA link (link_target=None) -> phải là điểm dừng (0/s) ===")
+print("=== Đối chứng 1: bridge CHƯA link, KHÔNG có ô kề nào khác ngoài đường vào -> 0/s ===")
 grid2 = Grid(width=30, height=20)
 for x, y in [(2, 2), (3, 2), (2, 3), (3, 3)]:
     grid2.set_ore(x, y, "coal")
 grid2.place(CATALOG["mechanical-drill"], 2, 2, rotation=0, ore_target="coal")
 grid2.place(CATALOG["conveyor"], 4, 3, rotation=0)
-grid2.place(CATALOG["bridge-conveyor"], 5, 3, rotation=0)  # không link
-core2 = grid2.place(CATALOG["core"], 11, 3)
+grid2.place(CATALOG["bridge-conveyor"], 5, 3, rotation=0)  # không link, cô lập
+core2 = grid2.place(CATALOG["core"], 11, 3)  # xa, không kề bridge
 result2 = evaluate_layout(grid2)
 print(f"  core nhận: {result2['output_rate'][core2]:.4f}/s")
-assert result2["output_rate"][core2] == 0, "SAI: bridge chưa link phải là điểm dừng, không tự nối được đâu cả"
-print("  ĐÚNG: bridge chưa link -> item kẹt tại đó, core không nhận được gì.")
+assert result2["output_rate"][core2] == 0, "SAI: không có ô kề nào để dump ra thì core không thể nhận được gì"
+print("  ĐÚNG: không có ô kề hợp lệ nào để dump -> core không nhận được gì (đúng, nhưng")
+print("  KHÔNG phải vì bridge 'bị kẹt' -- xem đối chứng 2).\n")
+
+print("=== Đối chứng 2: bridge CHƯA link nhưng CÓ ô kề khác -> tự dump ra đó (SỬA sau khi kiểm tra ItemBridge.java thật) ===")
+grid3 = Grid(width=30, height=20)
+for x, y in [(2, 2), (3, 2), (2, 3), (3, 3)]:
+    grid3.set_ore(x, y, "coal")
+grid3.place(CATALOG["mechanical-drill"], 2, 2, rotation=0, ore_target="coal")
+grid3.place(CATALOG["conveyor"], 4, 3, rotation=0)
+grid3.place(CATALOG["bridge-conveyor"], 5, 3, rotation=0)  # không link
+# core đặt SÁT bridge (footprint core 3x3 chạm ô (5,4), ngay phía nam bridge)
+core3 = grid3.place(CATALOG["core"], 4, 4)
+result3 = evaluate_layout(grid3)
+print(f"  core nhận: {result3['output_rate'][core3]:.4f}/s")
+assert result3["output_rate"][core3] > 0, (
+    "SAI: ItemBridge.java thật gọi doDump() khi chưa có link hợp lệ -- phải tự đẩy item "
+    "ra ô kề vật lý (core) như 1 building bình thường, không phải kẹt lại tại chỗ"
+)
+print("  ĐÚNG: bridge chưa link vẫn tự dump ra ô kề vật lý (core), đúng doDump() thật --")
+print("  KHÔNG bị kẹt như bản trước đây từng cài sai (xem NEXT_STEPS.md).")

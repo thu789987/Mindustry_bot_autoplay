@@ -42,7 +42,7 @@ DEFAULT_MODEL = "qwen2.5-7b-instruct"  # sửa cho khớp tên model bạn load 
 # plan_split_command/plan_filter_split_command trong bot/planner.py) --
 # không cấp tên turret/power/logic/unit/... vào ngữ cảnh model để tránh nó
 # "vẽ" ra lệnh bot không thực thi được.
-SUPPORTED_KINDS = {"drill", "belt", "factory", "pump", "sorter", "router"}
+SUPPORTED_KINDS = {"drill", "belt", "factory", "pump", "sorter", "router", "generator", "power-node"}
 
 
 def _valid_building_names():

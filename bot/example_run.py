@@ -17,6 +17,12 @@ FAKE_STATE = {
     "ore_tiles": [
         {"x": 2, "y": 2, "ore": "coal"}, {"x": 3, "y": 2, "ore": "coal"},
         {"x": 2, "y": 3, "ore": "coal"}, {"x": 3, "y": 3, "ore": "coal"},
+        # mỏ than thứ 2, riêng cho combustion-generator (silicon-smelter
+        # thật cần điện, xem NEXT_STEPS.md -- _ensure_powered tự đặt drill
+        # than MỚI cho generator thay vì tranh chấp router với drill than đã
+        # có, nên cần đủ mỏ than cho CẢ 2 drill).
+        {"x": 15, "y": 15, "ore": "coal"}, {"x": 16, "y": 15, "ore": "coal"},
+        {"x": 15, "y": 16, "ore": "coal"}, {"x": 16, "y": 16, "ore": "coal"},
         {"x": 2, "y": 10, "ore": "sand"}, {"x": 3, "y": 10, "ore": "sand"},
         {"x": 2, "y": 11, "ore": "sand"}, {"x": 3, "y": 11, "ore": "sand"},
     ],

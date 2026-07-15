@@ -11,6 +11,11 @@ TICKS_PER_SECOND = 60  # Mindustry's logic update rate
 class Item:
     name: str
     hardness: int
+    # ConsumeItemFlammable.java: lọc nhiên liệu cho generator (combustion-
+    # generator/steam-generator) theo item.flammability >= minFlammability,
+    # hiệu suất phát điện tỉ lệ thuận với flammability -- than (coal) = 1.0
+    # (cao nhất), phần lớn item khác = 0.
+    flammability: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,27 @@ class BuildingType:
     # report "chưa hỗ trợ xây loại X" instead of guessing. See
     # NEXT_STEPS.md mục "Phạm vi chưa làm" for what each would need.
     category: Optional[str] = None
+    # kind="generator" (ConsumeGenerator.java, vd combustion-generator/
+    # steam-generator): đốt BẤT KỲ item nào đủ flammability >= min_flammability
+    # (không phải 1 item cố định như factory thường -- xem sim.py
+    # _generator_power_rate), power_production = công suất/tick ở hiệu suất
+    # 100% (item flammability=1.0, xem PowerGenerator.java powerProduction),
+    # item_duration = số tick đốt hết 1 item (ConsumeGenerator.java itemDuration).
+    power_production: float = 0.0
+    item_duration: float = 0.0
+    min_flammability: float = 0.0
+    # generator: liquid cần kèm nhiên liệu cháy (vd steam-generator cần cả
+    # than lẫn nước) -- tách riêng khỏi `recipe` (Recipe dataclass giả định
+    # có 1 output_item cố định, không khớp generator không xuất item nào cả).
+    generator_liquid_inputs: dict = field(default_factory=dict)
+    # power_input: công suất/giây building này CẦN khi hoạt động (drill tier
+    # cao/nhiều factory thật cần điện, xem Blocks.java consumePower()) --
+    # 0 nghĩa là không cần điện (hầu hết building tier thấp, vd
+    # mechanical-drill/graphite-press).
+    power_input: float = 0.0
+    # kind="power-node" (PowerNode.java): bán kính (số ô) tự động link không
+    # dây tới building có điện khác trong tầm -- xem PowerNode.java laserRange.
+    power_range: float = 0.0
 
 
 # core không phải Drill/Conveyor/GenericCrafter nên tools/generate_catalog.py

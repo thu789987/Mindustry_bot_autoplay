@@ -89,11 +89,23 @@ UNLOADER_CLASSES = {"Unloader", "DirectionalUnloader"}
 # trong source, xem Blocks.java) để sim.py nhận diện đúng lúc kiểm tra hàng
 # xóm của unloader.
 STORAGE_CLASSES = {"StorageBlock"}
+# ConsumeGenerator.java (vd combustion-generator/steam-generator): đốt BẤT KỲ
+# item nào đủ flammability (ConsumeItemFlammable.java: filter theo
+# item.flammability >= minFlammability, hiệu suất phát điện = flammability
+# của item đó) -- khác hẳn factory thường (tiêu thụ 1 item CỐ ĐỊNH, số lượng
+# cố định). Chỉ nhận block dùng đúng pattern này (kiểm tra
+# "ConsumeItemFlammable" trong thân); generator khác cơ chế (vd
+# thermal-generator dùng nhiệt độ tile, differential-generator dùng chênh
+# lệch nhiệt độ 2 liquid) rơi vào GENERATED_OTHER, không đoán bừa.
+GENERATOR_CLASSES = {"ConsumeGenerator"}
+# PowerNode.java: không sản xuất/tiêu thụ điện, chỉ TRUYỀN không dây trong
+# bán kính laserRange (số ô) -- xem sim.py phần dựng mạng điện.
+POWER_NODE_CLASSES = {"PowerNode"}
 HANDLED_CLASSES = (
     DRILL_CLASSES | BELT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
     | PUMP_CLASSES | CONDUIT_CLASSES | ROUTER_CLASSES | JUNCTION_CLASSES
     | OVERFLOW_CLASSES | BRIDGE_CLASSES | MASS_DRIVER_CLASSES | UNLOADER_CLASSES
-    | STORAGE_CLASSES
+    | STORAGE_CLASSES | GENERATOR_CLASSES | POWER_NODE_CLASSES
 )
 
 # Class biết tồn tại, cố ý không model -- lý do cụ thể ghi trong SKIPPED khi gặp
@@ -134,12 +146,14 @@ def extract_blocks(java_text: str, class_names=None) -> list:
 
 
 def parse_named_values(java_text: str, class_names: set) -> dict:
-    """field-name Java (vd Items.xxx/Liquids.xxx) -> (content-name-string, extra_field)."""
+    """field-name Java (vd Items.xxx/Liquids.xxx) -> (content-name-string, hardness, flammability)."""
     result = {}
     for varname, _, blockname, body in extract_blocks(java_text, class_names):
         m = re.search(r"\bhardness\s*=\s*(\d+)", body)
         hardness = int(m.group(1)) if m else 0
-        result[varname] = (blockname, hardness)
+        m = re.search(rf"\bflammability\s*=\s*({_EXPR})", body)
+        flammability = _eval_expr(m.group(1)) if m else 0.0
+        result[varname] = (blockname, hardness, flammability)
     return result
 
 
@@ -176,6 +190,14 @@ def field_int(body, name, default=None):
 def field_bool(body, name, default=False):
     m = re.search(rf"\b{name}\s*=\s*(true|false)", body)
     return m.group(1) == "true" if m else default
+
+
+def parse_power_input(body):
+    """consumePower(X) là lệnh gọi (không phải field = expr) nên cần regex
+    riêng khác field_float. X là công suất/TICK ở hiệu suất 100% -- quy đổi
+    ra công suất/giây bằng *60 (giống mọi rate/tick khác trong codebase này)."""
+    m = re.search(rf"consumePower\(({_EXPR})\)", body)
+    return _eval_expr(m.group(1)) * TICKS_PER_SECOND if m else 0.0
 
 
 def field_category(body):
@@ -247,6 +269,7 @@ def main():
 
     drills, belts, factories, sorters, pumps, conduits, routers, skipped = [], [], [], [], [], [], [], []
     junctions, overflow_gates, bridges, mass_drivers, unloaders, storages = [], [], [], [], [], []
+    generators, power_nodes = [], []
     handled_names = set()
 
     for varname, classname, blockname, body in handled_blocks:
@@ -259,7 +282,11 @@ def main():
             if tier is None:
                 skipped.append((blockname, classname, "thiếu tier"))
                 continue
-            drills.append({"name": blockname, "size": size, "tier": tier, "drill_time": drill_time, "hardness_multiplier": hardness_mult})
+            power_input = parse_power_input(body)
+            drills.append({
+                "name": blockname, "size": size, "tier": tier, "drill_time": drill_time,
+                "hardness_multiplier": hardness_mult, "power_input": power_input,
+            })
             handled_names.add(blockname)
 
         elif classname in BELT_CLASSES:
@@ -281,11 +308,13 @@ def main():
                 skipped.append((blockname, classname, "thiếu/không parse được input item (có thể chỉ dùng liquid/power)"))
                 continue
             liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, craft_time_ticks)
+            power_input = parse_power_input(body)
             factories.append({
                 "name": blockname, "size": size,
                 "craft_time_ticks": craft_time_ticks,
                 "inputs": inputs, "liquid_inputs": liquid_inputs,
                 "output_item": output[0], "output_amount": output[1],
+                "power_input": power_input,
             })
             handled_names.add(blockname)
 
@@ -302,7 +331,8 @@ def main():
             if pump_amount is None:
                 skipped.append((blockname, classname, "thiếu pumpAmount"))
                 continue
-            pumps.append({"name": blockname, "size": size, "pump_amount": pump_amount})
+            power_input = parse_power_input(body)
+            pumps.append({"name": blockname, "size": size, "pump_amount": pump_amount, "power_input": power_input})
             handled_names.add(blockname)
 
         elif classname in CONDUIT_CLASSES:
@@ -346,11 +376,33 @@ def main():
             storages.append({"name": blockname, "size": size})
             handled_names.add(blockname)
 
+        elif classname in GENERATOR_CLASSES:
+            if "ConsumeItemFlammable" not in body:
+                skipped.append((blockname, classname, "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"))
+                continue
+            power_production = field_float(body, "powerProduction", default=0.0)
+            item_duration = field_float(body, "itemDuration", default=120.0)
+            m = re.search(rf"new ConsumeItemFlammable\(({_EXPR})\)", body)
+            min_flammability = _eval_expr(m.group(1)) if m else 0.2  # 0.2 = default ctor, xem ConsumeItemFlammable.java
+            liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, item_duration)
+            generators.append({
+                "name": blockname, "size": size, "power_production": power_production,
+                "item_duration": item_duration, "min_flammability": min_flammability,
+                "liquid_inputs": liquid_inputs,
+            })
+            handled_names.add(blockname)
+
+        elif classname in POWER_NODE_CLASSES:
+            laser_range = field_float(body, "laserRange", default=6.0)
+            power_nodes.append({"name": blockname, "size": size, "power_range": laser_range})
+            handled_names.add(blockname)
+
     print(f"  -> drill: {len(drills)}, belt: {len(belts)}, factory: {len(factories)}, "
           f"sorter: {len(sorters)}, pump: {len(pumps)}, conduit: {len(conduits)}, "
           f"router: {len(routers)}, junction: {len(junctions)}, overflow-gate: "
           f"{len(overflow_gates)}, bridge: {len(bridges)}, mass-driver: {len(mass_drivers)}, "
-          f"unloader: {len(unloaders)}, bỏ qua: {len(skipped)}")
+          f"unloader: {len(unloaders)}, generator: {len(generators)}, power-node: {len(power_nodes)}, "
+          f"bỏ qua: {len(skipped)}")
 
     # Lượt 2: MỌI block còn lại (bất kể class), chỉ lấy tên+category+size,
     # không có recipe/rate. Bỏ qua block không có requirements(Category...)
@@ -372,14 +424,16 @@ def main():
 
     write_output(
         item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
-        conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages, other, skipped,
+        conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
+        generators, power_nodes, other, skipped,
     )
     print(f"đã ghi {OUT_PATH}")
 
 
 def write_output(
     item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
-    conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages, other, skipped,
+    conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
+    generators, power_nodes, other, skipped,
 ):
     lines = [
         '"""TỰ ĐỘNG SINH bởi tools/generate_catalog.py -- đừng sửa tay, chạy lại script.',
@@ -395,8 +449,8 @@ def write_output(
         "",
         "GENERATED_ITEMS = {",
     ]
-    for name, hardness in sorted({v[0]: v[1] for v in item_field_to_name.values()}.items()):
-        lines.append(f'    "{name}": Item("{name}", hardness={hardness}),')
+    for name, (hardness, flammability) in sorted({v[0]: (v[1], v[2]) for v in item_field_to_name.values()}.items()):
+        lines.append(f'    "{name}": Item("{name}", hardness={hardness}, flammability={flammability}),')
     lines.append("}")
     lines.append("")
     lines.append("GENERATED_LIQUIDS = {")
@@ -409,7 +463,8 @@ def write_output(
     for d in sorted(drills, key=lambda b: b["name"]):
         lines.append(
             f'    "{d["name"]}": BuildingType("{d["name"]}", size={d["size"]}, kind="drill", '
-            f'drill_time={d["drill_time"]}, hardness_multiplier={d["hardness_multiplier"]}, tier={d["tier"]}),'
+            f'drill_time={d["drill_time"]}, hardness_multiplier={d["hardness_multiplier"]}, tier={d["tier"]}, '
+            f'power_input={d["power_input"]}),'
         )
     for b in sorted(belts, key=lambda b: b["name"]):
         lines.append(f'    "{b["name"]}": BuildingType("{b["name"]}", size={b["size"]}, kind="belt", base_rate={b["base_rate"]}),')
@@ -420,7 +475,8 @@ def write_output(
         lines.append(
             f'    "{f["name"]}": BuildingType("{f["name"]}", size={f["size"]}, kind="factory", recipe=Recipe('
             f'craft_time={craft_time_s!r}, inputs={inputs_repr}, liquid_inputs={liquid_repr}, '
-            f'output_item="{f["output_item"]}", output_amount={f["output_amount"]})),'
+            f'output_item="{f["output_item"]}", output_amount={f["output_amount"]}), '
+            f'power_input={f["power_input"]}),'
         )
     for s in sorted(sorters, key=lambda b: b["name"]):
         lines.append(
@@ -428,7 +484,10 @@ def write_output(
             f'config_type="item", invert={s["invert"]}),'
         )
     for p in sorted(pumps, key=lambda b: b["name"]):
-        lines.append(f'    "{p["name"]}": BuildingType("{p["name"]}", size={p["size"]}, kind="pump", pump_amount={p["pump_amount"]}),')
+        lines.append(
+            f'    "{p["name"]}": BuildingType("{p["name"]}", size={p["size"]}, kind="pump", '
+            f'pump_amount={p["pump_amount"]}, power_input={p["power_input"]}),'
+        )
     for c in sorted(conduits, key=lambda b: b["name"]):
         # v1: conduit coi như không giới hạn thông lượng (nghẽn thật luôn ở
         # pump/nhà máy, không phải ống) -- dòng liquid thật của Mindustry
@@ -462,6 +521,15 @@ def write_output(
         )
     for st in sorted(storages, key=lambda b: b["name"]):
         lines.append(f'    "{st["name"]}": BuildingType("{st["name"]}", size={st["size"]}, kind="storage"),')
+    for g in sorted(generators, key=lambda b: b["name"]):
+        liquid_repr = "{" + ", ".join(f'"{k}": {v}' for k, v in g["liquid_inputs"].items()) + "}"
+        lines.append(
+            f'    "{g["name"]}": BuildingType("{g["name"]}", size={g["size"]}, kind="generator", '
+            f'power_production={g["power_production"]}, item_duration={g["item_duration"]}, '
+            f'min_flammability={g["min_flammability"]}, generator_liquid_inputs={liquid_repr}),'
+        )
+    for pn in sorted(power_nodes, key=lambda b: b["name"]):
+        lines.append(f'    "{pn["name"]}": BuildingType("{pn["name"]}", size={pn["size"]}, kind="power-node", power_range={pn["power_range"]}),')
     lines.append("}")
     lines.append("")
     lines.append("# Chỉ có tên+category+size, CHƯA có recipe/rate -- planner từ chối đặt")

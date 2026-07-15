@@ -47,6 +47,19 @@ BUILDING_PHRASES = {
     "sorter": "sorter",
     "bơm": "mechanical-pump",
     "pump": "mechanical-pump",
+    # nhà máy điện (generator, đốt item cháy được -- xem ConsumeGenerator.java,
+    # NEXT_STEPS.md mục "Mạng điện"). Không nói rõ loại -> mặc định
+    # combustion-generator (rẻ nhất, chỉ cần than, không cần nước), giống
+    # tinh thần "máy khoan" mặc định tier rẻ nhất. Nói rõ "hơi nước" -> đúng
+    # steam-generator (cần thêm nước, công suất cao hơn).
+    "nhà máy điện": "combustion-generator",
+    "máy phát điện": "combustion-generator",
+    "nhà máy đốt than": "combustion-generator",
+    "combustion-generator": "combustion-generator",
+    "nhà máy điện hơi nước": "steam-generator",
+    "nhà máy hơi nước": "steam-generator",
+    "máy phát điện hơi nước": "steam-generator",
+    "steam-generator": "steam-generator",
 }
 
 # ore keyword (lowercase) -> item name in simulator.buildings.ITEMS, dùng khi

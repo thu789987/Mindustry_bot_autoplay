@@ -16,6 +16,10 @@ FAKE_STATE = {
     "ore_tiles": [
         {"x": 2, "y": 2, "ore": "coal"}, {"x": 3, "y": 2, "ore": "coal"},
         {"x": 2, "y": 3, "ore": "coal"}, {"x": 3, "y": 3, "ore": "coal"},
+        # mỏ than thứ 2 riêng cho combustion-generator -- xem cùng comment
+        # trong bot/example_run.py (silicon-smelter thật cần điện).
+        {"x": 20, "y": 15, "ore": "coal"}, {"x": 21, "y": 15, "ore": "coal"},
+        {"x": 20, "y": 16, "ore": "coal"}, {"x": 21, "y": 16, "ore": "coal"},
         {"x": 2, "y": 10, "ore": "sand"}, {"x": 3, "y": 10, "ore": "sand"},
         {"x": 2, "y": 11, "ore": "sand"}, {"x": 3, "y": 11, "ore": "sand"},
     ],

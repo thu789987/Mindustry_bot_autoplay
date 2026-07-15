@@ -51,7 +51,10 @@ print("=== Bước 2: chạy từng lệnh qua plan(), state cập nhật dần 
 state = {
     "width": 30, "height": 20,
     "ore_tiles": [{"x": x, "y": y, "ore": "coal"} for x, y in [(2, 2), (3, 2), (2, 3), (3, 3)]]
-              + [{"x": x, "y": y, "ore": "sand"} for x, y in [(10, 2), (11, 2), (10, 3), (11, 3)]],
+              + [{"x": x, "y": y, "ore": "sand"} for x, y in [(10, 2), (11, 2), (10, 3), (11, 3)]]
+              # mỏ than thứ 2 cho combustion-generator (silicon-smelter cần
+              # điện, xem NEXT_STEPS.md).
+              + [{"x": x, "y": y, "ore": "coal"} for x, y in [(15, 15), (16, 15), (15, 16), (16, 16)]],
     "buildings": [{"type": "core", "x": 20, "y": 10, "rotation": 0}],
 }
 grid = grid_from_state(state)

@@ -16,7 +16,7 @@ from collections import deque
 
 from simulator.buildings import CATALOG, DIRECTIONS, ITEMS, LIQUIDS
 from simulator.grid import Grid
-from simulator.sim import produced_item, produced_liquid, trace_belt_path
+from simulator.sim import evaluate_layout, produced_item, produced_liquid, trace_belt_path
 
 
 def find_producer(grid: Grid, item_name: str):
@@ -555,6 +555,7 @@ def _resolve_split_destination(grid: Grid, actions: list, dest: dict, near, excl
         # vá bằng _connect_to_core) như plan_build's drill/factory branch đã
         # gặp trước đó, xem NEXT_STEPS.md.
         _connect_to_core(grid, actions, target, f"đã tự đặt '{building_name}' làm đích split")
+        _ensure_powered(grid, actions, target, near=(tx, ty), scorer=scorer, preferences=preferences)
         return target_footprint
 
     raise RuntimeError(f"destination không hợp lệ: {dest}")
@@ -645,6 +646,65 @@ def _connect_to_core(grid: Grid, actions: list, source, error_prefix: str):
         return
     _route(grid, actions, source.output_tile(), core.footprint(), CATALOG["conveyor"],
            f"{error_prefix} nhưng không tìm được đường belt nối tới core")
+
+
+def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, preferences: dict = None):
+    """Nếu `building` cần điện (power_input > 0, xem Blocks.java
+    consumePower() -- laser-drill/blast-drill/silicon-smelter/multi-press...
+    hầu hết factory thật đều cần) nhưng mạng điện hiện tại chưa đủ công suất
+    (kiểm tra bằng evaluate_layout() thật, không đoán), tự đặt 1
+    combustion-generator (đốt than -- flammability=1.0, cao nhất, lựa chọn
+    mặc định rẻ nhất, giống cách bot luôn mặc định mechanical-drill/
+    mechanical-pump cho input thường), tự nối than cho nó, và đặt 1
+    power-node cạnh building để bắc cầu vào tầm (laserRange=6 ô) -- KHÔNG tự
+    suy luận loại generator/lượng cần chính xác cho lưới điện phức tạp
+    nhiều building, chỉ đủ cấp cho 1 building đơn lẻ vừa xây. Xem
+    NEXT_STEPS.md mục mạng điện cho giới hạn đầy đủ."""
+    if building.type.power_input <= 0:
+        return
+
+    result = evaluate_layout(grid)
+    if result["power_satisfaction"].get(building, 0.0) >= 1.0 - 1e-6:
+        return
+
+    generator_type = CATALOG["combustion-generator"]
+    gen_spot = find_free_area(grid, generator_type, near=near, preferences=preferences)
+    if gen_spot is None:
+        raise RuntimeError(f"'{building.type.name}' cần điện nhưng không tìm được chỗ đặt combustion-generator")
+    gx, gy = gen_spot
+    new_gen = grid.place(generator_type, gx, gy, rotation=0)
+    actions.append({"op": "place", "building": "combustion-generator", "x": gx, "y": gy, "rotation": 0})
+
+    # Luôn tự đặt drill than MỚI riêng cho generator, không tái dùng
+    # find_producer(grid,"coal") -- nếu có -- vì drill than có sẵn trên map
+    # rất có thể ĐANG là nguồn của chính lệnh split/build hiện tại (router
+    # của nó đã dùng hết 4 ô kề cho các nhánh khác), tái dùng sẽ tranh chấp
+    # chỗ trên cùng 1 router và gây lỗi "không tìm được đường" giả (bug thật
+    # gặp khi test: source=drill than của lệnh split, generator lại cũng đi
+    # xin nối vào ĐÚNG drill than đó). Đánh đổi: có thể dư 1 drill than nếu
+    # đã có sẵn, chấp nhận được để tránh tranh chấp router phức tạp hơn.
+    core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
+    core_pos = (core.x, core.y) if core is not None else None
+    ore_pos = find_unmined_ore(grid, "coal", near=core_pos)
+    if ore_pos is None:
+        raise RuntimeError(f"'{building.type.name}' cần điện (combustion-generator cần than làm nhiên liệu) nhưng không có mỏ than nào chưa khai thác trên map")
+    drill_type = select_drill_type(ITEMS["coal"].hardness, scorer=scorer)
+    drill_spot = find_drill_spot(grid, "coal", near=ore_pos, drill_type=drill_type)
+    if drill_spot is None:
+        raise RuntimeError("không tìm được chỗ đặt drill than cho combustion-generator")
+    dx, dy = drill_spot
+    actions.append({"op": "place", "building": drill_type.name, "x": dx, "y": dy, "rotation": 0, "ore_target": "coal"})
+    coal_producer = grid.place(drill_type, dx, dy, rotation=0, ore_target="coal")
+
+    _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
+           f"'{building.type.name}' cần điện nhưng không nối được than tới combustion-generator")
+
+    node_type = CATALOG["power-node"]
+    node_spot = find_free_area(grid, node_type, near=(building.x, building.y), preferences=preferences)
+    if node_spot is not None:
+        nx, ny = node_spot
+        grid.place(node_type, nx, ny, rotation=0)
+        actions.append({"op": "place", "building": "power-node", "x": nx, "y": ny, "rotation": 0})
 
 
 def _find_or_build_factory_sources(grid: Grid, actions: list, recipe, core_pos, scorer=None, exclude_item=None, exclude_liquid=None):
@@ -792,8 +852,50 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
         grid.place(building_type, x, y, rotation=0, liquid_target=liquid_target)
         return actions
 
+    if building_type.kind == "generator":
+        # ConsumeGenerator.java thật: đốt BẤT KỲ item cháy được, không phải
+        # input cố định như factory -- mặc định luôn dùng than (flammability
+        # cao nhất, lựa chọn rẻ/phổ biến nhất, cùng tinh thần "máy khoan"
+        # mặc định tier rẻ nhất khi không nói rõ). steam-generator còn cần
+        # thêm nước (generator_liquid_inputs) -- tự đặt pump nếu recipe có.
+        near = core_pos if core_pos is not None else (0, 0)
+        gen_spot = find_free_area(grid, building_type, near=near, preferences=preferences)
+        if gen_spot is None:
+            raise RuntimeError(f"không tìm được chỗ trống để đặt '{building_name}'")
+        gx, gy = gen_spot
+        new_gen = grid.place(building_type, gx, gy, rotation=0)
+        actions.append({"op": "place", "building": building_name, "x": gx, "y": gy, "rotation": 0})
+
+        ore_pos = find_unmined_ore(grid, "coal", near=near)
+        if ore_pos is None:
+            raise RuntimeError(f"'{building_name}' cần than làm nhiên liệu nhưng không có mỏ than nào chưa khai thác trên map")
+        drill_type = select_drill_type(ITEMS["coal"].hardness, scorer=scorer)
+        drill_spot = find_drill_spot(grid, "coal", near=ore_pos, drill_type=drill_type)
+        if drill_spot is None:
+            raise RuntimeError(f"không tìm được chỗ đặt drill than cho '{building_name}'")
+        dx, dy = drill_spot
+        actions.append({"op": "place", "building": drill_type.name, "x": dx, "y": dy, "rotation": 0, "ore_target": "coal"})
+        coal_producer = grid.place(drill_type, dx, dy, rotation=0, ore_target="coal")
+        _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
+               f"'{building_name}' cần than nhưng không nối được đường belt")
+
+        for liquid_name, amount_per_cycle in building_type.generator_liquid_inputs.items():
+            liquid_pos = find_untapped_liquid(grid, liquid_name, near=near)
+            if liquid_pos is None:
+                raise RuntimeError(f"'{building_name}' cần '{liquid_name}' nhưng không có nguồn nào chưa khai thác trên map")
+            pump_spot = find_pump_spot(grid, liquid_name, near=liquid_pos)
+            if pump_spot is None:
+                raise RuntimeError(f"không tìm được chỗ đặt pump bơm '{liquid_name}' cho '{building_name}'")
+            px, py = pump_spot
+            actions.append({"op": "place", "building": "mechanical-pump", "x": px, "y": py, "rotation": 0, "liquid_target": liquid_name})
+            new_pump = grid.place(CATALOG["mechanical-pump"], px, py, rotation=0, liquid_target=liquid_name)
+            _route(grid, actions, new_pump.output_tile(), new_gen.footprint(), CATALOG["conduit"],
+                   f"'{building_name}' cần '{liquid_name}' nhưng không nối được đường ống")
+
+        return actions
+
     if building_type.kind != "factory":
-        raise ValueError(f"planner chỉ hỗ trợ xây drill/pump/factory, không hỗ trợ '{building_type.kind}'")
+        raise ValueError(f"planner chỉ hỗ trợ xây drill/pump/factory/generator, không hỗ trợ '{building_type.kind}'")
 
     sources, liquid_sources = _find_or_build_factory_sources(
         grid, actions, building_type.recipe, core_pos, scorer=scorer
@@ -834,6 +936,10 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
     # Tự nối belt đầu RA của factory về core, nếu map có core (xem mục "Vá
     # 2 lỗ hổng..." trong NEXT_STEPS.md).
     _connect_to_core(grid, actions, new_factory, f"đã xây '{building_name}'")
+
+    # Tự cấp điện nếu factory cần (hầu hết factory thật đều cần, xem
+    # _ensure_powered) -- không làm gì nếu power_input=0.
+    _ensure_powered(grid, actions, new_factory, near=(tx, ty), scorer=scorer, preferences=preferences)
 
     return actions
 
