@@ -6,6 +6,42 @@ nó chỉ NGHE 3 sự kiện xây dựng thật của Mindustry và ghi ra file,
 `bot/log_learning.py` (đã viết và test xong ở phía Python từ trước, xem
 `bot/log_learning_demo.py`) đọc lại và tự rút phản hồi cho `bot/scorer.py`.
 
+## Hướng dẫn sử dụng (từng bước)
+
+1. **Build** — cần Java 17 + Gradle (máy dự án hiện tại không có, phải làm
+   trên máy khác có Java hoặc cài JDK 17 + Gradle vào máy này):
+   ```
+   cd mod
+   gradle jar
+   ```
+   Ra file `mod/build/libs/log-learningDesktop.jar`.
+
+2. **Cài vào Mindustry** — copy file jar đó vào thư mục mods:
+   - Windows: `%appdata%\Mindustry\mods\`
+   - Linux: `~/.local/share/Mindustry/mods/`
+
+   Mở game → **Settings → Mods** → tick bật **"Log Learning"** → restart
+   game nếu game yêu cầu.
+
+3. **Chơi bình thường** — vào map đơn (hoặc host server) và chơi như thường:
+   đặt belt, drill, factory, sorter, xoay building... Mod tự ghi lại mọi
+   hành động, không cần làm gì thêm. Mỗi phiên chơi tạo 1 thư mục mới tại
+   `<thư mục data Mindustry>/log-learning/<yyyy-MM-dd_HH-mm-ss>/` (xem mục
+   "Log ghi ra đâu" bên dưới để biết chính xác vị trí theo hệ điều hành).
+
+4. **Nạp log vào bot để học** — copy thư mục phiên chơi đó về máy đang chạy
+   `mindustry-factory-ai`, chạy đoạn Python ở mục "Dùng log đã ghi để học"
+   bên dưới. `scorer.weights` sẽ tự cập nhật và lưu lại — lần sau
+   `bot/planner.py` gọi `plan_build()` sẽ đề xuất vị trí gần với thói quen
+   bạn từng chọn hơn.
+
+**Lưu ý quan trọng:**
+- Chỉ hoạt động khi bạn chơi map đơn hoặc đang **host** server — vào server
+  người khác mà họ không cài mod này thì log không ghi được (đặc thù
+  client/server của Mindustry, xem mục Giới hạn).
+- Chưa build/test thật lần nào (máy hiện tại không có Java) — nếu build
+  hoặc chạy lỗi, lưu lại thông báo lỗi để đối chiếu lại với source thật.
+
 ## Build
 
 Cần JDK 17 (khớp `sourceCompatibility` trong `build.gradle`, xem template gốc
