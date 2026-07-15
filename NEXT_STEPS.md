@@ -1252,3 +1252,29 @@ quả như phản hồi tự tay.
   được không" giảm nhiễu (loại xây tạm/xây rồi phá) nhưng không loại bỏ hết
   khả năng học nhầm từ 1 lựa chọn ngẫu nhiên lúc chơi mà vẫn tình cờ hoạt
   động được.
+
+## Mod Java ghi log gameplay thật (`mod/`)
+
+Đóng nốt phần "chưa có Java trên máy" ghi từ đầu dự án ở `bot/mod_bridge.py`.
+Viết `mod/src/loglearning/LogLearningMod.java` — bắt 3 sự kiện thật
+`BlockBuildEndEvent`/`ConfigEvent`/`BuildRotateEvent`, ghi ra
+`actions.jsonl` + `initial_state.json` đúng format `bot/log_learning.py` +
+`bot/state.py` đã hỗ trợ sẵn (xem `mod/README.md` để biết build/cài/format
+đầy đủ, và bảng đối chiếu field với source thật).
+
+Không có Java/Gradle trên máy này nên **chưa build/chưa chạy thật lần nào**
+— giống hệt tình trạng `bot/mod_bridge.py` từ Milestone Phase 2. Bù lại, mọi
+API dùng trong code (event field, `Tile`/`Building`/`Floor`/`Block` field,
+`Jval` — lớp JSON builder có sẵn trong Arc mà Mindustry phụ thuộc, tránh
+phải tự viết JSON serializer) đều đã tải trực tiếp từ
+`github.com/Anuken/Mindustry`/`github.com/Anuken/Arc` (nhánh `master`) để
+đối chiếu từng dòng trước khi viết — kể cả 1 lỗi thật bắt được giữa chừng:
+`player.team()` (đoán nhầm là method) → sửa lại `player.team` (field, xác
+nhận qua `PlayerComp.java` thật: `@ReadOnly Team team = Team.sharded;`).
+
+Giới hạn đã biết (xem đầy đủ ở `mod/README.md`): chỉ ghi hành động của team
+người chơi cục bộ; chỉ hoạt động khi máy này mô phỏng thế giới thật (map
+đơn hoặc host server, không phải client vào server người khác); `ConfigEvent
+.value` chỉ map đúng cho Item/Liquid/boolean/số (đủ cho sorter, chưa map
+Point2 cho bridge/mass-driver link); `initial_state.json` không suy luận lại
+`ore_target` cho drill có sẵn từ trước phiên log.

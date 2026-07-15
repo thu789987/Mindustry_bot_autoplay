@@ -1,0 +1,23 @@
+#the mod name as displayed in-game
+displayName: "Log Learning"
+
+#the internal name of your mod
+name: "log-learning"
+
+#your name
+author: "mindustry-factory-ai"
+
+#the fully qualified main class of the mod
+main: "loglearning.LogLearningMod"
+
+#the mod description as seen in the mod dialog
+description: "Ghi log hanh dong xay dung (place/remove/configure/rotate) ra file JSONL de bot/log_learning.py hoc tu gameplay that."
+
+#the mod version
+version: 1.0
+
+#the minimum game build required to run this mod
+minGameVersion: 158
+
+#this is a java mod
+java: true

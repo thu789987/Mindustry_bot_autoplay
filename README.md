@@ -77,3 +77,8 @@ tiếp từ game đang chạy qua mod (xem Milestone 4).
 - **Milestone 4**: đối chiếu layout thắng với game thật (headless server hoặc
   mod dump content trực tiếp), hiệu chỉnh lại số liệu nếu version lệch, xuất
   layout ra schematic Mindustry.
+- **Milestone 5 (đang làm)**: mod Java ghi log gameplay thật, bắt 3 sự kiện
+  `BlockBuildEndEvent`/`ConfigEvent`/`BuildRotateEvent` (xem `mod/`) ra
+  đúng format `actions` mà `bot/log_learning.py` đã hỗ trợ từ trước —
+  đóng nốt phần "chưa có Java trên máy để build/test" đã ghi từ đầu dự án ở
+  `bot/mod_bridge.py`. Chi tiết build/cài đặt: `mod/README.md`.
