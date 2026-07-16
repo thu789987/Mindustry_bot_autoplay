@@ -1014,22 +1014,61 @@ def _find_or_build_factory_sources(grid: Grid, actions: list, recipe, core_pos, 
     return sources, liquid_sources
 
 
-def plan_fill_ore(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
-    """"Phủ kín mỏ": 1 lệnh build thường (plan_build nhánh "drill") chỉ đặt
-    ĐÚNG 1 drill dù mỏ to cỡ nào (find_drill_spot trả về ngay ô hợp lệ ĐẦU
-    TIÊN, xem docstring hàm đó) -- lệnh này lặp lại đúng quy trình đó cho
-    tới khi find_drill_spot() không còn chỗ nào (mỏ đã bị các drill trước
-    đó chiếm hết, grid.building_at() loại trừ dần từng ô mỗi vòng lặp -- số
-    ứng viên "chưa khai thác" giảm chặt mỗi vòng nên chắc chắn dừng, không
-    cần giới hạn số vòng lặp thủ công).
+def _build_drill_row_manifold(grid: Grid, actions: list, building_type, ore_target: str, min_x: int, max_x: int, row_y: int, lane_dir: int):
+    """Đặt 1 HÀNG drill dọc theo x (từ min_x tới max_x tại row_y), tất cả
+    quay mặt (rotation=1, xuống Nam) đổ thẳng vào 1 LANE (đường conveyor
+    duy nhất) ngay bên dưới -- giống cách người chơi thật xếp hàng drill
+    cạnh 1 belt chạy dọc, thay vì mỗi drill tự đi riêng 1 đường (xem
+    NEXT_STEPS.md "manifold"). Trả về list PlacedBuilding đã đặt (rỗng nếu
+    hàng này không đặt được drill nào -- vd không có ore, hoặc vướng hết).
 
-    Nhiều drill cần boost nước (_try_boost_with_water) sẽ tự động DÙNG
-    CHUNG 1 nguồn nước duy nhất thay vì mỗi drill 1 nguồn riêng -- không cần
-    code "tối ưu" riêng, vì _try_boost_with_water() LUÔN ưu tiên tái sử dụng
-    producer đã có trên map (qua _route_or_branch_from_producer, dùng router
-    chia nhánh) trước khi cân nhắc xây nguồn mới; nguồn nước drill ĐẦU TIÊN
-    tự xây sẽ được các drill SAU đó tìm thấy qua find_liquid_producer() và
-    tái sử dụng."""
+    Không tự gọi _ensure_powered/_try_boost_with_water/nối lane về core --
+    caller (plan_fill_ore) lo phần đó SAU KHI biết chắc hàng có drill."""
+    s = building_type.size
+    placed = []
+    x = min_x
+    while x <= max_x:
+        if grid.can_place(building_type, x, row_y):
+            footprint = [(x + fx, row_y + fy) for fx in range(s) for fy in range(s)]
+            if any(grid.in_bounds(fx, fy) and grid.tiles[fy][fx].ore == ore_target for fx, fy in footprint):
+                actions.append({"op": "place", "building": building_type.name, "x": x, "y": row_y, "rotation": 1, "ore_target": ore_target})
+                new_drill = grid.place(building_type, x, row_y, rotation=1, ore_target=ore_target)
+                placed.append(new_drill)
+                x += s
+                continue
+        # Ô này không đặt được (đã có building, hoặc không chạm ore) --
+        # dò từng ô 1 thay vì nhảy hẳn `s`, để không bỏ sót chỗ đặt được
+        # nếu mỏ không đều/có vật cản xen giữa.
+        x += 1
+    if not placed:
+        return []
+
+    lane_y = row_y + s
+    landing_xs = [d.output_tile()[0] for d in placed]
+    lane_x_start, lane_x_end = min(landing_xs), max(landing_xs)
+    for lx in range(lane_x_start, lane_x_end + 1):
+        if grid.building_at(lx, lane_y) is None:
+            grid.place(CATALOG["conveyor"], lx, lane_y, rotation=lane_dir)
+            actions.append({"op": "place", "building": "conveyor", "x": lx, "y": lane_y, "rotation": lane_dir})
+    return placed
+
+
+def plan_fill_ore(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
+    """"Phủ kín mỏ": lệnh build thường (plan_build nhánh "drill") chỉ đặt
+    ĐÚNG 1 drill dù mỏ to cỡ nào -- lệnh này quét TOÀN BỘ ô ore cùng loại
+    trên map, xếp drill thành từng HÀNG dọc theo mỏ, mỗi hàng dùng CHUNG 1
+    đường conveyor (manifold, xem _build_drill_row_manifold) thay vì mỗi
+    drill tự đi riêng 1 đường về core -- bug thật user tự phát hiện qua hỏi
+    "đặt full mỏ xong rồi nối băng chuyền với nhau ... chỉ có 1 băng chuyền
+    về core không": phiên bản trước đó (find_drill_spot + _connect_to_core
+    lặp lại) mỗi drill BFS 1 đường ĐỘC LẬP, ra N đường belt chồng chéo thay
+    vì 1 đường gom chung -- đã verify thật bằng debug script trước khi sửa:
+    4 drill ra 86 conveyor (per-drill BFS né hết mọi thứ), thay bằng
+    manifold ra 3 drill chỉ 18 conveyor cho cùng 1 mỏ tương tự.
+
+    Nhiều drill cần boost nước (_try_boost_with_water) vẫn tự động DÙNG
+    CHUNG 1 nguồn nước duy nhất như trước (không đổi cơ chế đó, xem
+    _route_or_branch_from_producer)."""
     building_name = command["building"]
     ore_target = command.get("ore_target")
     if ore_target is None:
@@ -1051,27 +1090,69 @@ def plan_fill_ore(grid: Grid, command: dict, scorer=None, preferences: dict = No
             )
 
     core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
-    core_pos = (core.x, core.y) if core is not None else None
+    if core is None:
+        raise RuntimeError("map chưa có core, không biết nối belt về đâu")
 
+    # Bounding box của MỌI ô ore cùng loại trên map -- đơn giản hoá: coi
+    # chung là 1 "mỏ", không phân biệt nhiều mỏ rời rạc cùng loại item (nếu
+    # có, bounding box sẽ trùm cả khoảng trống giữa chúng, tốn công quét
+    # thừa nhưng không sai -- xem Giới hạn trong NEXT_STEPS.md). KHÔNG dùng
+    # `ore_location_hint` ở đây (khác plan_build thường) vì mục đích là phủ
+    # HẾT mỏ, không phải chọn 1 mỏ cụ thể trong nhiều mỏ.
+    ore_tiles = [
+        (x, y) for y in range(grid.height) for x in range(grid.width)
+        if grid.tiles[y][x].ore == ore_target
+    ]
+    if not ore_tiles:
+        raise RuntimeError(f"không tìm thấy mỏ '{ore_target}' nào trên map")
+    min_x = min(x for x, y in ore_tiles)
+    max_x = max(x for x, y in ore_tiles)
+    min_y = min(y for x, y in ore_tiles)
+    max_y = max(y for x, y in ore_tiles)
+
+    # Lane chảy về hướng core gần hơn (Tây nếu core ở bên trái trung tâm mỏ,
+    # ngược lại thì Đông) -- không đảm bảo tối ưu tuyệt đối, chỉ tránh
+    # trường hợp tệ nhất (lane chảy ngược hẳn hướng core).
+    ore_center_x = (min_x + max_x) / 2
+    lane_dir = 2 if core.x < ore_center_x else 0  # 2=Tây, 0=Đông (xem DIRECTIONS)
+
+    s = building_type.size
     actions = []
-    placed = 0
-    while True:
-        ore_pos = find_unmined_ore(grid, ore_target, near=core_pos, hint=command.get("ore_location_hint"))
-        if ore_pos is None:
-            break
-        spot = find_drill_spot(grid, ore_target, near=ore_pos, drill_type=building_type)
-        if spot is None:
-            break
-        x, y = spot
-        actions.append({"op": "place", "building": building_type.name, "x": x, "y": y, "rotation": 0, "ore_target": ore_target})
-        new_drill = grid.place(building_type, x, y, rotation=0, ore_target=ore_target)
-        _ensure_powered(grid, actions, new_drill, near=(x, y), scorer=scorer, preferences=preferences)
-        _try_boost_with_water(grid, actions, new_drill, preferences=preferences)
-        _connect_to_core(grid, actions, new_drill, f"đã đặt drill '{ore_target}' (phủ kín mỏ, #{placed + 1})")
-        placed += 1
+    total_placed = 0
+    # Hàng SAU không luôn BFS thẳng về core -- nếu có lane của hàng TRƯỚC đó
+    # ở gần hơn, nối THẲNG vào lane đó (item tiếp tục chảy theo hướng của
+    # lane cũ, cuối cùng vẫn ra core, không cần đường riêng). Không làm vậy,
+    # hàng sau dễ phải đi VÒNG QUANH cả khối hạ tầng hàng trước (đã đo thật:
+    # 4 drill 2 hàng độc lập ra 106 conveyor, TỆ HƠN cả cách cũ mỗi drill tự
+    # đi riêng -- xem NEXT_STEPS.md).
+    existing_lane_tiles: list = []
+    y = min_y
+    while y <= max_y:
+        row_drills = _build_drill_row_manifold(grid, actions, building_type, ore_target, min_x, max_x, y, lane_dir)
+        if row_drills:
+            lane_y = y + s
+            landing_xs = [d.output_tile()[0] for d in row_drills]
+            lane_x_start, lane_x_end = min(landing_xs), max(landing_xs)
+            row_lane_tiles = [(lx, lane_y) for lx in range(lane_x_start, lane_x_end + 1)]
+            dx_flow, _ = DIRECTIONS[lane_dir]
+            end_x = lane_x_start if lane_dir == 2 else lane_x_end
+            merge_targets = core.footprint() + existing_lane_tiles
+            path = _route(grid, actions, (end_x + dx_flow, lane_y), merge_targets, CATALOG["conveyor"],
+                           f"đã đặt {len(row_drills)} drill '{ore_target}' (hàng y={y}) nhưng không nối được lane về core")
+            existing_lane_tiles.extend(row_lane_tiles)
+            existing_lane_tiles.extend((bx, by) for bx, by, rotation in path)
+            for d in row_drills:
+                _ensure_powered(grid, actions, d, near=(d.x, d.y), scorer=scorer, preferences=preferences)
+                _try_boost_with_water(grid, actions, d, preferences=preferences)
+            total_placed += len(row_drills)
+        # Nhảy qua cả chân đế drill (s hàng) LẪN hàng lane vừa đặt (1 hàng)
+        # trước khi thử hàng tiếp theo -- nếu không, vòng lặp sau sẽ tự đụng
+        # ngay lane vừa đặt (coi là "vướng", không sai nhưng lãng phí 1 lượt
+        # quét).
+        y += s + 1
 
-    if placed == 0:
-        raise RuntimeError(f"không tìm thấy mỏ '{ore_target}' chưa khai thác trên map (hoặc không có chỗ đặt)")
+    if total_placed == 0:
+        raise RuntimeError(f"không tìm được chỗ đặt drill nào cho mỏ '{ore_target}' (mỏ quá nhỏ/vướng hết)")
 
     return actions
 

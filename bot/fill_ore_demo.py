@@ -9,7 +9,14 @@ chỉ 1" -- xác nhận trước đó (đọc code) là CHỈ 1, user xác nhậ
 năng này, kèm yêu cầu thêm: "tương lai mỗi Drill Laser hoặc cao hơn sẽ phải
 cần thêm 1 nguồn nước ... phải tối ưu cái đó" -- ĐÃ SỬA giả định sai ban đầu
 (cả 4 tier đều cần/hỗ trợ nước, xem bot/liquid_boost_demo.py), và "tối ưu"
-được hiểu là: nhiều drill dùng CHUNG 1 nguồn nước, không phải 1 nguồn/drill."""
+được hiểu là: nhiều drill dùng CHUNG 1 nguồn nước, không phải 1 nguồn/drill.
+
+Bản đầu của plan_fill_ore() (lặp find_drill_spot + _connect_to_core độc
+lập) bị chính user hỏi tiếp: "đặt full mỏ xong rồi nối băng chuyền với nhau
+cho sao chỉ có 1 băng chuyền về core không" -- xác nhận qua debug script là
+KHÔNG, mỗi drill tự BFS 1 đường riêng (4 drill ra 86 conveyor). Đã sửa sang
+"manifold": xếp drill thành hàng, cả hàng đổ chung vào 1 lane, chỉ lane đó
+nối tiếp về core -- xem _build_drill_row_manifold trong bot/planner.py."""
 
 import sys
 from pathlib import Path
@@ -72,18 +79,38 @@ if remaining_ore is not None:
 print("  ĐÚNG: dừng đúng lúc mỏ đã hết chỗ đặt drill mới, không dừng sớm/bỏ sót.\n")
 
 
-print("--- Kịch bản 2: mỗi drill trong lệnh 'phủ kín mỏ' đều đã tự nối belt về core (không phải chỉ đặt suông) ---")
+print("--- Kịch bản 2: các drill trong 1 hàng dùng CHUNG 1 đường belt (manifold), không phải mỗi drill tự đi riêng ---")
+# Bug thật user tự phát hiện: "đặt full mỏ xong rồi nối băng chuyền với
+# nhau cho sao chỉ có 1 băng chuyển về core không" -- verify bằng debug
+# script TRƯỚC khi sửa: 4 drill kiểu cũ (mỗi cái tự BFS riêng, né mọi thứ)
+# ra 86 conveyor. Giờ đo lại số conveyor thật của bản manifold, phải THẤP
+# HƠN HẲN baseline đó theo tỉ lệ mỗi drill.
 result1 = evaluate_layout(grid1)
 core1 = next(b for b in grid1.unique_buildings() if b.type.kind == "core")
-# core.output_rate đo tổng throughput ĐÃ CHẢY VỀ core (tất cả nhánh conveyor
-# thật đã đặt) -- >0 nghĩa là ít nhất 1 drill đã nối xong; đếm thêm số nguồn
-# (trực tiếp hoặc qua router) THẬT SỰ nối vào core để có bức tranh đầy đủ hơn.
-core_sources = {src for src, dest, cap in result1["connections"] if dest is core1}
 n_drills_placed = sum(1 for b in grid1.unique_buildings() if b.type.name == "mechanical-drill")
-print(f"  số drill đã đặt: {n_drills_placed}, số nguồn (trực tiếp hoặc qua router) nối vào core: {len(core_sources)}")
+n_conveyor1 = count_places(actions1, "conveyor")
+conveyor_per_drill = n_conveyor1 / n_drills_placed
+print(f"  số drill đã đặt: {n_drills_placed}, tổng conveyor: {n_conveyor1} ({conveyor_per_drill:.1f}/drill)")
 print(f"  throughput chì về core: {result1['output_rate'][core1]:.4f}/s")
-assert result1["output_rate"][core1] > 0.0, "SAI: 'phủ kín mỏ' phải tự nối belt về core cho từng drill, không chỉ đặt suông"
-print("  ĐÚNG: throughput thật > 0, xác nhận drill đã nối belt hoạt động, không phải chỉ đặt xuống rồi bỏ đó.\n")
+assert result1["output_rate"][core1] > 0.0, "SAI: 'phủ kín mỏ' phải tự nối belt về core, không chỉ đặt suông"
+assert conveyor_per_drill < 15.0, (
+    f"SAI: {conveyor_per_drill:.1f} conveyor/drill -- QUÁ GẦN baseline kiểu cũ (mỗi drill tự đi riêng, "
+    f"đo được ~21.5/drill trước khi sửa) -- có vẻ manifold không thật sự dùng chung đường belt"
+)
+
+# Xác nhận vật lý: các drill trong CÙNG 1 hàng phải đổ vào CÙNG 1 hàng
+# conveyor (cùng toạ độ y) -- đây mới là bằng chứng trực tiếp "dùng chung 1
+# đường", không chỉ suy luận gián tiếp từ số lượng conveyor ít.
+placed_drills1 = [b for b in grid1.unique_buildings() if b.type.name == "mechanical-drill"]
+lane_ys = {}
+for d in placed_drills1:
+    ly = d.output_tile()[1]
+    lane_ys.setdefault(ly, []).append(d)
+shared_lanes = {ly: ds for ly, ds in lane_ys.items() if len(ds) > 1}
+print(f"  số hàng (lane_y) có >=2 drill dùng chung: {len(shared_lanes)}, chi tiết: {[(ly, len(ds)) for ly, ds in shared_lanes.items()]}")
+assert shared_lanes, "SAI: phải có ít nhất 1 hàng có từ 2 drill trở lên đổ chung vào 1 lane_y"
+print("  ĐÚNG: xác nhận bằng cả số lượng conveyor (thấp hơn hẳn baseline) lẫn toạ độ vật lý")
+print("  (nhiều drill cùng hàng đổ vào đúng 1 lane_y) -- manifold hoạt động thật, không phải suy diễn.\n")
 
 
 print("--- Kịch bản 3: 'phủ kín mỏ' với drill CẦN NƯỚC -> nhiều drill dùng CHUNG 1 nguồn nước, không phải 1 nguồn/drill ---")

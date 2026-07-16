@@ -1672,12 +1672,10 @@ Regression: 33/33 script pass sau khi thêm (32 cũ + 2 demo mới, trừ 1 scri
 - `impact-drill`/`eruption-drill` (BurstDrill) có `consumeLiquid` BẮT BUỘC
   riêng (không có `.boost()`) CHƯA model -- xem mục "Sửa giả định sai" ở
   trên.
-- `plan_fill_ore()` không tối ưu BỐ CỤC giữa các drill (không cố đặt sát
-  nhau để tiết kiệm diện tích, không gom nhiều drill dùng chung 1 trục belt
-  chính về core) -- mỗi drill vẫn tự nối belt RIÊNG về core, có thể ra nhiều
-  đường belt chồng chéo thay vì 1 đường gom chung. Chỉ tối ưu được phần
-  NGUỒN NƯỚC dùng chung (đúng yêu cầu ban đầu của user), chưa tối ưu belt
-  item.
+- `plan_fill_ore()` (phần belt item) đã sửa sang manifold -- xem mục riêng
+  "plan_fill_ore() dùng manifold" bên dưới, KHÔNG còn đúng như mô tả cũ ở
+  đây nữa (giữ dòng này để mai sau đọc lịch sử không hiểu nhầm là chưa từng
+  ghi nhận).
 - Trên map/mỏ lớn + nhiều drill cần điện+nước đồng thời, dễ gặp giới hạn
   pathfinding đã biết từ trước (hạ tầng điện/nước của drill đặt trước có
   thể vô tình chặn hành lang belt của drill đặt sau nếu không gian hẹp) --
@@ -1688,3 +1686,85 @@ Regression: 33/33 script pass sau khi thêm (32 cũ + 2 demo mới, trừ 1 scri
   hơn/dày đặc hơn thật.
 - Không tính `drillMultipliers` (hệ số tốc độ riêng từng item) -- giới hạn
   đã ghi từ mục BeamDrill/WallCrafter, vẫn áp dụng.
+
+## `plan_fill_ore()` dùng manifold -- gộp cả hàng drill vào 1 đường belt
+
+User hỏi tiếp ngay sau khi "phủ kín mỏ" xong: *"vậy giờ có 1 mỏ, bot có biết
+đặt full mỏ xong rồi nối băng chuyền với nhau cho sao chỉ có 1 băng chuyển
+về core không?"* -- verify bằng debug script TRƯỚC khi trả lời (không đoán):
+bản `plan_fill_ore()` ban đầu (lặp `find_drill_spot` + `_connect_to_core`
+độc lập cho từng drill) cho ra **4 drill = 4 đường belt riêng, 86
+conveyor** trên 1 mỏ 4x4 -- xác nhận đúng câu hỏi, mỗi drill tự BFS 1 đường
+không hề gộp. User xác nhận muốn sửa.
+
+### Cơ chế thật muốn mô phỏng -- "manifold"
+
+Cách người chơi Mindustry thật hay làm: xếp NHIỀU drill thành 1 HÀNG, tất cả
+quay mặt đổ thẳng vào 1 đường conveyor chạy dọc ngay cạnh cả hàng (mỗi drill
+đổ vào ĐÚNG 1 ô conveyor riêng của nó trên cùng đường đó, không cần
+router/junction) -- rồi chỉ đúng 1 đường conveyor đó chạy tiếp về core.
+
+### Đã làm
+
+`bot/planner.py`: `_build_drill_row_manifold(grid, actions, building_type,
+ore_target, min_x, max_x, row_y, lane_dir)` -- quét dọc trục X tại 1 hàng Y
+cố định, đặt drill (rotation=1, quay mặt xuống Nam) tại mọi vị trí hợp lệ
+chạm ore, bước `size` ô mỗi lần đặt được (dò từng ô 1 nếu vướng, không bỏ
+sót do mỏ không đều), rồi lấp ĐẦY 1 hàng conveyor liên tục ngay bên dưới
+(`row_y + size`) từ cột đầu tới cột cuối trong số các `output_tile()` của
+drill vừa đặt -- các cột đó tự nhiên KHÔNG trùng nhau (drill cách nhau đúng
+`size`, `output_tile()` luôn ở cột giữa chân đế mỗi drill).
+
+`plan_fill_ore()` viết lại: quét bounding box của MỌI ô ore cùng loại trên
+map (không phân biệt nhiều mỏ rời rạc -- xem Giới hạn), chọn hướng lane
+(`lane_dir`) theo phía core gần hơn (Tây/Đông), rồi lặp qua từng HÀNG (bước
+`size + 1` -- chừa đúng 1 hàng cho lane) gọi `_build_drill_row_manifold`.
+Mỗi hàng có drill thì nối lane của nó về đích: **KHÔNG** luôn BFS thẳng về
+core -- đích là `core.footprint() + toàn bộ tile lane của các hàng TRƯỚC ĐÓ`
+(`existing_lane_tiles`, tích luỹ qua từng vòng lặp), để hàng sau MERGE thẳng
+vào lane hàng trước nếu gần hơn, thay vì phải BFS vòng qua nguyên khối hạ
+tầng hàng trước để tới core riêng.
+
+### Bug thật tự phát hiện khi đo số liệu -- multi-hàng độc lập còn TỆ HƠN cách cũ
+
+Bản đầu (mỗi hàng tự BFS thẳng về core, không biết tới lane hàng khác) đo
+được: 4 drill / 2 hàng / **106 conveyor** -- TỆ HƠN CẢ con số 86 của cách cũ
+(mỗi drill tự đi riêng)! Lý do: hàng 2 phải đi VÒNG QUANH nguyên khối hạ
+tầng hàng 1 (drill + lane hàng 1 chắn ngang) để tới core, tốn hơn cả việc
+từng drill tự né nhau lẻ tẻ. Sửa bằng cơ chế merge-vào-lane-trước ở trên,
+đo lại: cùng 1 mỏ 4x4, ra 4 drill / **58 conveyor** (14.5/drill, thấp hơn
+hẳn baseline 21.5/drill của cách cũ).
+
+### Test
+
+`bot/fill_ore_demo.py` (cập nhật lại kịch bản 2): đo trực tiếp
+`conveyor/drill` phải dưới ngưỡng 15.0 (baseline cũ ~21.5, bản manifold lỗi
+đo được 26.5 -- ngưỡng này bắt được cả 2 loại hồi quy); xác nhận VẬT LÝ bằng
+cách nhóm các drill theo `output_tile()[1]` (toạ độ Y của lane) -- phải có
+ít nhất 1 nhóm ≥2 drill cùng đổ vào 1 `lane_y`, không chỉ suy luận gián tiếp
+từ số lượng conveyor ít.
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- Chỉ hỗ trợ lane NGANG (hàng theo trục X, drill quay mặt Nam) -- mỏ dài
+  theo trục Y (cần lane DỌC) vẫn hoạt động đúng (vẫn quét được nhiều "hàng"
+  dọc theo Y, mỗi hàng 1 lane ngang riêng) nhưng không tối ưu bằng nếu tự
+  mỏ đó vốn hợp với layout dọc hơn.
+- `lane_dir` chọn 1 LẦN cho toàn bộ mỏ dựa theo vị trí core so với TÂM mỏ --
+  không xét lại cho từng hàng riêng, có thể không tối ưu nếu core nằm chéo
+  góc so với mỏ dài.
+- Việc "merge vào lane hàng trước" chỉ xét lane của các hàng đã xử lý TRƯỚC
+  ĐÓ trong CÙNG lệnh gọi -- không tái sử dụng belt có sẵn từ TRƯỚC lệnh này
+  (vd core đã có 1 đường belt khác từ lệnh cũ) trừ khi nó tình cờ nằm trên
+  đường BFS.
+- `evaluate_layout()`/`find_connections()` vẫn ghi nhận MỖI DRILL là 1
+  "edge" riêng vào core trong đồ thị tính throughput (dù vật lý dùng chung 1
+  lane) -- không sai (mỗi drill vẫn được tính đúng rate + tới đúng core),
+  chỉ là số "edges" không phản ánh trực tiếp số ĐƯỜNG BELT VẬT LÝ -- đã đổi
+  cách verify trong demo sang đếm conveyor thật + toạ độ lane_y thay vì đếm
+  edges (xem mục Test).
+- Không mô hình hoá tranh chấp CAPACITY thật khi nhiều drill dùng chung 1
+  lane (mỗi nguồn vẫn được tính như thể có toàn bộ `base_rate` của belt cho
+  riêng nó, không chia sẻ) -- cùng kiểu đơn giản hoá "steady-state xấp xỉ"
+  đã áp dụng ở mọi nơi khác trong simulator, không phải bug riêng của
+  manifold.
