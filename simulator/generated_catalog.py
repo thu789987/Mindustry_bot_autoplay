@@ -1,9 +1,9 @@
 """TỰ ĐỘNG SINH bởi tools/generate_catalog.py -- đừng sửa tay, chạy lại script.
 
 Nguồn: Anuken/Mindustry (master, reference/*.java).
-Bỏ qua 15 block không parse được (xem SKIPPED cuối file) -- không
+Bỏ qua 12 block không parse được (xem SKIPPED cuối file) -- không
 phải bug, do cơ chế không khớp pattern hỗ trợ hoặc cố ý chưa model.
-195 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
+190 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
 recipe/rate, planner từ chối đặt thay vì đoán. Xem NEXT_STEPS.md.
 """
 
@@ -49,12 +49,17 @@ GENERATED_LIQUIDS = {
 }
 
 GENERATED_BUILDINGS = {
-    "blast-drill": BuildingType("blast-drill", size=4, kind="drill", drill_time=280.0, hardness_multiplier=50.0, tier=5, power_input=180.0),
-    "eruption-drill": BuildingType("eruption-drill", size=5, kind="drill", drill_time=281.25, hardness_multiplier=50.0, tier=7, power_input=360.0),
-    "impact-drill": BuildingType("impact-drill", size=4, kind="drill", drill_time=720.0, hardness_multiplier=50.0, tier=6, power_input=160.0),
-    "laser-drill": BuildingType("laser-drill", size=3, kind="drill", drill_time=280.0, hardness_multiplier=50.0, tier=4, power_input=66.0),
-    "mechanical-drill": BuildingType("mechanical-drill", size=2, kind="drill", drill_time=600.0, hardness_multiplier=50.0, tier=2, power_input=0.0),
-    "pneumatic-drill": BuildingType("pneumatic-drill", size=2, kind="drill", drill_time=400.0, hardness_multiplier=50.0, tier=3, power_input=0.0),
+    "blast-drill": BuildingType("blast-drill", size=4, kind="drill", drill_time=280.0, hardness_multiplier=50.0, tier=5, power_input=180.0, boost_liquid="water", boost_amount=0.1, boost_intensity=1.8),
+    "eruption-drill": BuildingType("eruption-drill", size=5, kind="drill", drill_time=281.25, hardness_multiplier=0.0, tier=7, power_input=360.0, boost_liquid="cyanogen", boost_amount=0.0125, boost_intensity=2.0),
+    "impact-drill": BuildingType("impact-drill", size=4, kind="drill", drill_time=720.0, hardness_multiplier=0.0, tier=6, power_input=160.0, boost_liquid="ozone", boost_amount=0.05, boost_intensity=1.75),
+    "laser-drill": BuildingType("laser-drill", size=3, kind="drill", drill_time=280.0, hardness_multiplier=50.0, tier=4, power_input=66.0, boost_liquid="water", boost_amount=0.08, boost_intensity=1.6),
+    "mechanical-drill": BuildingType("mechanical-drill", size=2, kind="drill", drill_time=600.0, hardness_multiplier=50.0, tier=2, power_input=0.0, boost_liquid="water", boost_amount=0.05, boost_intensity=1.6),
+    "pneumatic-drill": BuildingType("pneumatic-drill", size=2, kind="drill", drill_time=400.0, hardness_multiplier=50.0, tier=3, power_input=0.0, boost_liquid="water", boost_amount=0.058333333333333334, boost_intensity=1.6),
+    "large-plasma-bore": BuildingType("large-plasma-bore", size=3, kind="beam-drill", drill_time=100.0, tier=5, beam_range=6, power_input=48.0),
+    "plasma-bore": BuildingType("plasma-bore", size=2, kind="beam-drill", drill_time=160.0, tier=3, beam_range=5, power_input=9.0),
+    "cliff-crusher": BuildingType("cliff-crusher", size=2, kind="wall-crafter", drill_time=110.0, wall_attribute="sand", wall_output="sand", power_input=11.0),
+    "large-cliff-crusher": BuildingType("large-cliff-crusher", size=3, kind="wall-crafter", drill_time=48.0, wall_attribute="sand", wall_output="sand", power_input=60.0),
+    "water-extractor": BuildingType("water-extractor", size=2, kind="solid-pump", pump_amount=0.11, solid_pump_attribute="water", solid_pump_liquid="water", power_input=90.0),
     "armored-conveyor": BuildingType("armored-conveyor", size=1, kind="belt", base_rate=10.0),
     "conveyor": BuildingType("conveyor", size=1, kind="belt", base_rate=6.5),
     "titanium-conveyor": BuildingType("titanium-conveyor", size=1, kind="belt", base_rate=10.0),
@@ -142,7 +147,6 @@ GENERATED_OTHER = {
     "carbide-wall": BuildingType("carbide-wall", size=1, kind="defense", category="defense"),
     "carbide-wall-large": BuildingType("carbide-wall-large", size=2, kind="defense", category="defense"),
     "chemical-combustion-chamber": BuildingType("chemical-combustion-chamber", size=3, kind="power", category="power"),
-    "cliff-crusher": BuildingType("cliff-crusher", size=2, kind="production", category="production"),
     "coal-centrifuge": BuildingType("coal-centrifuge", size=2, kind="crafting", category="crafting"),
     "constructor": BuildingType("constructor", size=3, kind="units", category="units"),
     "copper-wall": BuildingType("copper-wall", size=1, kind="defense", category="defense"),
@@ -190,11 +194,9 @@ GENERATED_OTHER = {
     "lancer": BuildingType("lancer", size=2, kind="turret", category="turret"),
     "landing-pad": BuildingType("landing-pad", size=4, kind="effect", category="effect"),
     "large-canvas": BuildingType("large-canvas", size=3, kind="logic", category="logic"),
-    "large-cliff-crusher": BuildingType("large-cliff-crusher", size=3, kind="production", category="production"),
     "large-constructor": BuildingType("large-constructor", size=5, kind="units", category="units"),
     "large-logic-display": BuildingType("large-logic-display", size=6, kind="logic", category="logic"),
     "large-payload-mass-driver": BuildingType("large-payload-mass-driver", size=5, kind="units", category="units"),
-    "large-plasma-bore": BuildingType("large-plasma-bore", size=3, kind="production", category="production"),
     "large-shield-projector": BuildingType("large-shield-projector", size=4, kind="effect", category="effect"),
     "launch-pad": BuildingType("launch-pad", size=3, kind="effect", category="effect"),
     "liquid-source": BuildingType("liquid-source", size=1, kind="liquid", category="liquid"),
@@ -233,7 +235,6 @@ GENERATED_OTHER = {
     "phase-synthesizer": BuildingType("phase-synthesizer", size=3, kind="crafting", category="crafting"),
     "phase-wall": BuildingType("phase-wall", size=1, kind="defense", category="defense"),
     "phase-wall-large": BuildingType("phase-wall-large", size=2, kind="defense", category="defense"),
-    "plasma-bore": BuildingType("plasma-bore", size=2, kind="production", category="production"),
     "plastanium-conveyor": BuildingType("plastanium-conveyor", size=1, kind="distribution", category="distribution"),
     "plastanium-wall": BuildingType("plastanium-wall", size=1, kind="defense", category="defense"),
     "plastanium-wall-large": BuildingType("plastanium-wall-large", size=2, kind="defense", category="defense"),
@@ -308,7 +309,6 @@ GENERATED_OTHER = {
     "unit-cargo-unload-point": BuildingType("unit-cargo-unload-point", size=2, kind="distribution", category="distribution"),
     "unit-repair-tower": BuildingType("unit-repair-tower", size=2, kind="units", category="units"),
     "vent-condenser": BuildingType("vent-condenser", size=3, kind="production", category="production"),
-    "water-extractor": BuildingType("water-extractor", size=2, kind="production", category="production"),
     "wave": BuildingType("wave", size=2, kind="turret", category="turret"),
     "world-cell": BuildingType("world-cell", size=1, kind="logic", category="logic"),
     "world-message": BuildingType("world-message", size=1, kind="logic", category="logic"),
@@ -329,7 +329,4 @@ SKIPPED = [
     ("pyrolysis-generator", "ConsumeGenerator", "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"),
     ("plastanium-conveyor", "StackConveyor", "cơ chế xếp chồng nhiều item/ô, khác hẳn Conveyor thường"),
     ("surge-conveyor", "StackConveyor", "cơ chế xếp chồng nhiều item/ô, khác hẳn Conveyor thường"),
-    ("water-extractor", "SolidPump", "rút 1 liquid cố định bất kể tile, không cần liquid tile khớp như Pump"),
-    ("plasma-bore", "BeamDrill", "đào theo tia dọc 1 hướng (range), không phải diện tích chân đế như Drill"),
-    ("large-plasma-bore", "BeamDrill", "đào theo tia dọc 1 hướng (range), không phải diện tích chân đế như Drill"),
 ]

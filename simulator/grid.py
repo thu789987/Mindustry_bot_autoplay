@@ -11,6 +11,11 @@ class Tile:
     ore: Optional[str] = None
     liquid: Optional[str] = None
     buildable: bool = True
+    # WallCrafter.java (vd cliff-crusher): đọc `other.block().attributes.get(attribute)`
+    # từ BLOCK ĐÁ/TƯỜNG tự nhiên kề bên -- game thật là số thực (weight), ở
+    # đây đơn giản hoá nhị phân "có/không" giống ore/liquid (xem README giới
+    # hạn), 1 tile khớp = +1.0 hiệu suất trong sim.py _wall_crafter_output_rate.
+    attribute: Optional[str] = None
 
 
 @dataclass(eq=False)
@@ -67,6 +72,9 @@ class Grid:
 
     def set_liquid(self, x, y, liquid):
         self.tiles[y][x].liquid = liquid
+
+    def set_attribute(self, x, y, attribute):
+        self.tiles[y][x].attribute = attribute
 
     def building_at(self, x, y):
         return self._by_tile.get((x, y))

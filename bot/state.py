@@ -10,6 +10,7 @@ Expected shape:
   "width": 40, "height": 30,
   "ore_tiles": [{"x": 10, "y": 12, "ore": "coal"}, ...],
   "liquid_tiles": [{"x": 5, "y": 5, "liquid": "water"}, ...],
+  "attribute_tiles": [{"x": 3, "y": 3, "attribute": "sand"}, ...],
   "buildings": [
     {"type": "mechanical-drill", "x": 10, "y": 12, "rotation": 0, "ore_target": "coal"},
     {"type": "mechanical-pump", "x": 5, "y": 5, "rotation": 0, "liquid_target": "water"},
@@ -37,6 +38,9 @@ def grid_from_state(data: dict) -> Grid:
 
     for tile in data.get("liquid_tiles", []):
         grid.set_liquid(tile["x"], tile["y"], tile["liquid"])
+
+    for tile in data.get("attribute_tiles", []):
+        grid.set_attribute(tile["x"], tile["y"], tile["attribute"])
 
     placed = []
     for b in data.get("buildings", []):

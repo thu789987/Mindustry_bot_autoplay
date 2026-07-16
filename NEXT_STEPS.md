@@ -1278,3 +1278,413 @@ người chơi cục bộ; chỉ hoạt động khi máy này mô phỏng thế 
 .value` chỉ map đúng cho Item/Liquid/boolean/số (đủ cho sorter, chưa map
 Point2 cho bridge/mass-driver link); `initial_state.json` không suy luận lại
 `ore_target` cho drill có sẵn từ trước phiên log.
+
+## 3 hệ thống drill còn thiếu (BurstDrill/BeamDrill/WallCrafter)
+
+Bắt đầu từ câu hỏi "trong game Drill có bao nhiêu hệ thống" -- tra ra 5 class
+Java khác nhau (`Drill`, `BurstDrill` kế thừa `Drill`, `BeamDrill`,
+`WallCrafter`, `Fracker` kế thừa `SolidPump` -- không tính vì ra liquid chứ
+không phải ore rắn). Trước phiên này chỉ `Drill`/`BurstDrill` được model
+(gộp chung 1 công thức), `BeamDrill`/`WallCrafter` nằm trong danh sách "biết
+nhưng cố ý chưa làm". Đã làm cả 3:
+
+### Bug thật thứ 5 -- BurstDrill.java tính sai hardness_multiplier
+
+Tải `BurstDrill.java` thật: field `hardnessDrillMultiplier = 0f` được set ở
+CẤP CLASS (comment thật: "does not drill in the traditional sense"), khác
+hẳn `Drill` (default 50.0 mỗi tier tự set riêng). `impact-drill`/
+`eruption-drill` (2 block dùng `BurstDrill`) KHÔNG set lại field này trong
+thân `{{ }}` riêng (đã grep `Blocks.java` xác nhận) -- `tools/
+generate_catalog.py` trước đây fallback về default CHUNG 50.0 cho cả 2
+class, khiến `impact-drill`/`eruption-drill` bị tính SAI (hardness của item
+ảnh hưởng tới tốc độ đào trong khi thật ra không hề ảnh hưởng, vì
+multiplier=0 làm hạng tử đó triệt tiêu). Cũng phát hiện thêm (chưa xử lý,
+xem Giới hạn): `BurstDrill`/`Drill` thật có `drillMultipliers.put(Item, X)`
+-- hệ số tốc độ RIÊNG từng loại item, catalog hiện tại không model (dùng 1
+`drill_time` chung cho mọi item drill đó đào được).
+
+Sửa: `tools/generate_catalog.py` giờ default `hardnessDrillMultiplier=0.0`
+riêng cho class `BurstDrill`, `50.0` cho `Drill` thường. Regenerate catalog,
+`impact-drill`/`eruption-drill` giờ `hardness_multiplier=0.0` đúng thật.
+
+### BeamDrill (plasma-bore/large-plasma-bore)
+
+Cơ chế thật (`BeamDrill.java`): bắn tia dò ore từ **MỖI cạnh** (không phải
+diện tích chân đế) -- size=1 có 4 tia, size=s có 4*s tia (s tia/cạnh). Mỗi
+tia quét tối đa `range` ô (mặc định 5), dừng ở ore ĐẦU TIÊN gặp (đơn giản
+hoá: game thật dừng ở "first SOLID tile", simulator không có wall-ore riêng
+nên dùng luôn `ore_tiles` floor overlay có sẵn). Rate = `60 * facingAmount /
+drillTime`, KHÔNG có hardness_multiplier (chỉ `tier` làm ngưỡng cứng
+`item.hardness <= tier`, không làm chậm tốc độ). Nhiều tia trúng NHIỀU LOẠI
+ore khác nhau -> HUỶ TOÀN BỘ sản lượng (game thật: "khi có nhiều hơn 1 loại
+item, coi như không có item nào" -- không phải lấy đa số).
+
+Đã làm: `BuildingType.beam_range`, `sim.py _beam_drill_scan/_beam_drill_
+target/_beam_drill_output_rate`, `tools/generate_catalog.py` parse
+`BeamDrill` (trước đây trong `KNOWN_UNMODELED`, giờ chuyển sang
+`HANDLED_CLASSES`), `produced_item()` đổi chữ ký nhận thêm `grid` (beam-drill
+tự nhận diện item lúc đánh giá, không gán `ore_target` cố định như drill
+thường -- kéo theo sửa `_generator_power_rate`/`_power_satisfaction` cũng
+nhận `grid` vì gọi `produced_item` bên trong). `bot/planner.py`:
+`find_beam_drill_spot` (chỗ đặt hợp lệ = ore NGAY SÁT footprint, đơn giản
+hoá chưa tận dụng hết tầm bắn xa -- xem Giới hạn), nhánh `plan_build` kind
+`"beam-drill"`. `command_parser.py`: "máy khoan plasma"/"máy khoan plasma
+lớn" + thêm vào `_DRILL_NAMES` (vẫn cần ore_target như drill thường).
+
+Test: `bot/beam_drill_demo.py` (4 kịch bản: rate đúng công thức, huỷ khi lẫn
+loại ore, ore ngoài tầm không tính, ore quá cứng không tính) +
+`bot/beam_wall_command_demo.py` (end-to-end lệnh chat -> đặt -> nối core).
+
+### WallCrafter (cliff-crusher/large-cliff-crusher)
+
+Cơ chế thật (`WallCrafter.java`): CHỈ quét dọc CẠNH ĐANG XOAY MẶT TỚI (khác
+BeamDrill quét cả 4 cạnh) -- đọc `attribute` (weight số thực từ
+`Block.attributes`, đơn giản hoá nhị phân ở đây) từ đá/tường TỰ NHIÊN kề
+cạnh đó, cộng dồn thành hiệu suất, ra 1 item CỐ ĐỊNH (`output`, gắn liền
+`attribute` -- cả 2 block thật hiện có đều dùng `Attribute.sand ->
+Items.sand`). Rate = `(60/drillTime) * hiệu_suất`.
+
+Đã làm: `simulator/grid.py` thêm hẳn khái niệm MỚI `Tile.attribute` +
+`Grid.set_attribute()` (trước đây Grid chỉ có `ore`/`liquid`, không có gì
+tương đương attribute Erekir). `BuildingType.wall_attribute`/`wall_output`.
+`sim.py _wall_crafter_output_rate`. `tools/generate_catalog.py` parse
+`WallCrafter` (field `attribute = Attribute.X`/`output = Items.X`, khác hẳn
+pattern `outputItem = new ItemStack(...)` của `GenericCrafter`, viết hàm
+`parse_wall_crafter_fields` riêng). `bot/state.py` thêm `attribute_tiles`
+vào state JSON contract (song song `ore_tiles`/`liquid_tiles`). `bot/
+planner.py`: `find_unmined_attribute` (như `find_unmined_ore`),
+`find_wall_crafter_spot` (khác `find_beam_drill_spot`: phải chọn ĐÚNG
+rotation, trả về `(x,y,rotation)` thay vì chỉ `(x,y)`), nhánh `plan_build`
+kind `"wall-crafter"` (không cần hỏi ore_target -- output cố định theo
+catalog). `command_parser.py`: "máy nghiền vách đá"/"máy nghiền vách đá lớn".
+
+Test: `bot/wall_crafter_demo.py` (4 kịch bản: rate đúng công thức, sai cạnh
+không tính dù đúng loại attribute, sai loại attribute không tính, hiệu suất
+cộng dồn theo từng ô chứ không phải tất-cả-hoặc-không) +
+`bot/beam_wall_command_demo.py`.
+
+### Giới hạn (ghi rõ, chưa xử lý)
+
+- **`drillMultipliers` (hệ số tốc độ riêng từng item)** chưa model cho BẤT
+  KỲ loại drill nào (kể cả `Drill` thường) -- catalog dùng 1 `drill_time`
+  chung, trong khi game thật vd `impact-drill` đào beryllium nhanh gấp đôi
+  so với item khác (`drillMultipliers.put(Items.beryllium, 2f)`).
+- **BeamDrill**: chỗ đặt chỉ tìm ore NGAY SÁT footprint (khoảng cách 1),
+  chưa tận dụng hết tầm bắn xa thật (`range` 5-6 ô) -- đơn giản hoá, không
+  sai (khoảng cách 1 luôn hợp lệ), chỉ chưa tối ưu diện tích tận dụng được.
+  Cũng không mô hình "first SOLID tile" thật (dùng ore_tiles floor overlay
+  thay vì wall-ore riêng, xem phần trên).
+- **WallCrafter**: `Tile.attribute` nhị phân (có/không), không phải weight
+  số thực như game thật -- 1 ô khớp luôn tính đúng 1.0 hiệu suất bất kể độ
+  "đậm đặc" thật. Không model item/liquid booster optional (`large-cliff-
+  crusher` thật có thể tiêu graphite để tăng tốc, bỏ qua -- cùng quy ước với
+  liquidBoostIntensity của Drill/Pump không model từ trước).
+
+## SolidPump (water-extractor) -- trả lời "map không có nước thì đào gì"
+
+Bắt đầu từ câu hỏi ngược lại của user ("water-extractor nằm trong mục drill
+mà, sao lúc đầu không làm luôn") -- đúng ra KHÔNG cùng class: dòng liệt kê
+`mechanicalDrill, ..., waterExtractor, ...` trong `Blocks.java` chỉ là mảng
+nội dung/UI, không phải bằng chứng cùng cơ chế. Grep dòng khởi tạo thật xác
+nhận `waterExtractor = new SolidPump(...)`. Lý do bỏ sót thật: lúc trả lời
+"Drill có bao nhiêu hệ thống" có kiểm cả `Fracker.java` (loại ra vì ra
+liquid, không phải ore rắn) nhưng KHÔNG mở `SolidPump.java` ra kiểm dù nó
+cũng có trong cùng thư mục `production/` -- ngầm loại vì tên "Pump" mà không
+nói rõ, không nhất quán so với cách xử lý `Fracker`.
+
+### Cơ chế thật (`SolidPump extends Pump`)
+
+Khác `WallCrafter` (chỉ quét 1 cạnh): quét **TOÀN BỘ diện tích chân đế**
+(giống `Drill` quét ore) -- công thức thật `fraction = validTiles + boost +
+attribute.env()` (validTiles=số tile nền hợp lệ chung, boost=tổng trọng số
+attribute thực, attribute.env()=hằng số môi trường riêng loại attribute).
+Quá nhiều thành phần không rõ ràng đầy đủ từ source (cơ chế cache
+`onProximityUpdate()` incremental, không tính lại mỗi tick) để model chính
+xác 100% -- đơn giản hoá NHỊ PHÂN giống mọi chỗ khác trong simulator: `rate
+= 60 * pump_amount * số_tile_khớp_attribute_dưới_chân_đế`. `water-extractor`
+thật: `pumpAmount=0.11`, `attribute=Attribute.water`, `result=Liquids.water`,
+`consumePower(1.5f)` (=90/s).
+
+### Đã làm
+
+`buildings.py`: `solid_pump_attribute`/`solid_pump_liquid`. `sim.py`:
+`_solid_pump_output_rate`, `produced_liquid()` thêm nhánh, `find_liquid_
+connections`/`_power_satisfaction` thêm `"solid-pump"` vào danh sách kind
+liquid. `tools/generate_catalog.py`: bỏ `SolidPump` khỏi `KNOWN_UNMODELED`
+(đã nằm đó từ 1 milestone RẤT sớm của dự án), parser mới `parse_solid_pump_
+fields` (đọc `attribute = Attribute.X` + `result = Liquids.X`, khác
+`parse_wall_crafter_fields` dùng `item_field_to_name` -- cái này cần
+`liquid_field_to_name`). `bot/planner.py`: `find_solid_pump_spot` (như
+`find_pump_spot` nhưng đọc `Tile.attribute`), nhánh `plan_build` kind
+`"solid-pump"` -- **không** gọi `_connect_to_core` (đã ghi rõ trong code:
+liquid không "giao thẳng về core" như item, giống hệt pump thường).
+`command_parser.py`: "máy hút nước"/"water-extractor".
+
+### Bug thật thứ 6 -- phát hiện khi viết demo: `plan_build()` không tự cấp điện cho 3 kind mới
+
+Viết test cho `water-extractor` (power_input=90) phát hiện: `plan_build()`
+KHÔNG gọi `_ensure_powered()` cho bất kỳ kind nào trong `drill`/`beam-drill`/
+`wall-crafter`/`pump`/`solid-pump` -- chỉ nhánh `"factory"` có gọi. Đây là
+lỗ hổng CÓ TỪ TRƯỚC (nhánh `"drill"` gốc cũng thiếu, không phải do
+beam-drill/wall-crafter/solid-pump mới gây ra), nhưng vì 3 kind mới đều có
+`power_input > 0` thật (plasma-bore=9, large-plasma-bore=48, cliff-
+crusher=11, large-cliff-crusher=60, water-extractor=90) nên lộ ra ngay khi
+test. Đã sửa: thêm `_ensure_powered()` vào cả 3 nhánh mới (`beam-drill`,
+`wall-crafter`, `solid-pump`). **Chưa sửa** nhánh `"drill"`/`"pump"` gốc
+(ngoài phạm vi việc đang làm, cần fix riêng -- có thể nhiều demo cũ đang
+"qua được" test chỉ nhờ 1 hiệu ứng phụ của kiến trúc: `_power_satisfaction`
+là hậu xử lý 1 lần SAU khi `output_rate`/`liquid_output_rate` đã cache, nên
+building ĐÍCH (vd core) đọc được giá trị CHƯA điều chỉnh điện của nguồn
+phía trên nếu core được `compute()` trước -- không phải lan truyền đúng,
+xem ghi chú `_ensure_powered` cũ trong code).
+
+### Test
+
+`bot/solid_pump_demo.py` (4 kịch bản, có gọi `_ensure_powered()` thật để
+cấp điện trước khi kiểm rate -- nếu không sẽ luôn ra 0 dù công thức đúng,
+xem Bug thật thứ 6): rate tỉ lệ đúng số tile khớp × power_satisfaction đo
+được, không có tile khớp thì 0, sai loại attribute thì 0, và
+`find_liquid_producer()` nhận diện đúng solid-pump là nguồn liquid hợp lệ
+cho factory khác cần (vd multi-press cần nước). Kịch bản 4 KHÔNG chain đủ 2
+building-cần-điện liên tiếp (water-extractor + multi-press cùng lúc) vì
+vướng giới hạn pathfinding không liên quan (map quá chật khi có 3 nguồn
+than + 2 generator + nhiều belt cùng lúc) -- kiểm `find_liquid_producer()`
+trực tiếp thay thế, đủ chứng minh cơ chế nối đúng mà không cần chiến đấu với
+1 giới hạn pathfinding có sẵn không phải trọng tâm của việc đang làm.
+
+## Bug thật thứ 7 -- "cấp N"/"tier N" bị command_parser.py âm thầm bỏ qua
+
+User tự phát hiện bằng cách chạy thật: gõ "sử dụng drill cấp 4 đào chì cho
+tôi" -- kỳ vọng `laser-drill` (tier 4 thật, xem `simulator/generated_
+catalog.py`), nhưng `command_parser.py` không có phrase nào bắt SỐ tier
+(`BUILDING_PHRASES` chỉ bắt TÊN riêng như "máy khoan laser"), nên câu chỉ
+khớp đúng 1 từ: `"drill"` -> sentinel chung. Số "cấp 4" biến mất hoàn toàn,
+không để lại dấu vết trong command dict. `plan_build()` sau đó gọi
+`select_drill_type()` tự chọn tier RẺ NHẤT đủ dùng cho chì (hardness=1) ->
+đặt nhầm `mechanical-drill` (tier 2), phớt lờ hoàn toàn yêu cầu người dùng
+-- lỗi ÂM THẦM, không báo gì cả.
+
+Test tiếp câu "drilllaser đào chì" (viết liền không dấu cách) -- cũng rớt về
+sentinel `"drill"` vì `BUILDING_PHRASES` chỉ khớp chuỗi con CHÍNH XÁC, không
+xử lý lỗi chính tả/viết liền (giới hạn đã biết trước, không sửa lần này --
+xem "Giới hạn" bên dưới).
+
+Sửa: thêm `TIER_RE = re.compile(r"(?:cấp|tier)\s*(\d+)")` +
+`DRILL_TIER_NAMES` (map số tier thật -> tên drill đúng tier, đối chiếu
+`generated_catalog.py`: 2=mechanical, 3=pneumatic, 4=laser, 5=blast,
+6=impact, 7=eruption). Trong `parse_command()`, nếu `action=="build"` và
+`building in _DRILL_NAMES` (đã khớp trước đó, sentinel hoặc tên riêng), số
+tier nói rõ LUÔN THẮNG -- kể cả khi xung đột với tên (vd "máy khoan laser
+cấp 2" -> ép về `mechanical-drill` tier 2, không phải laser tier 4, vì số
+nói sau/rõ hơn được ưu tiên). Không nói số thì hành vi CŨ (auto-select rẻ
+nhất đủ dùng) giữ nguyên, không đổi.
+
+Test: `bot/drill_tier_number_demo.py` (6 kịch bản: "cấp N"/"tier N" cho
+nhiều tier khác nhau, xung đột tên-vs-số, và trường hợp không nói số vẫn
+auto-select như cũ).
+
+### Giới hạn (chưa sửa, ghi rõ)
+
+- Không xử lý lỗi chính tả/viết liền ("drilllaser" không nhận ra
+  "laser-drill") -- `BUILDING_PHRASES` chỉ khớp chuỗi con chính xác, không
+  có fuzzy-match. Cùng giới hạn đã biết từ đầu dự án (dict-based parser,
+  không phải LLM -- xem đầu file `command_parser.py`).
+- `TIER_RE` chỉ áp dụng cho họ `Drill`/`BurstDrill` thường (`_DRILL_NAMES`
+  bao gồm cả `plasma-bore`/`large-plasma-bore` nhưng 2 building này chỉ có
+  1 tier CỐ ĐỊNH mỗi cái -- nói "plasma-bore cấp 5" không có ý nghĩa vì
+  không có "tier khác" của beam-drill để chọn, khác họ Drill thường có 6
+  tier độc lập).
+
+## Power-bridging -- ưu tiên nối vào mạng điện gần nhất thay vì luôn xây generator mới
+
+User re-test lại "drill cấp 4 đào chì" (sau khi Bug thật thứ 7 đã sửa xong
+phần tier-number) và phát hiện tiếp: `laser-drill` (power_input=66) được đặt
+xuống nhưng KHÔNG có điện -- vì nhánh `"drill"` gốc trong `plan_build()`
+(khác beam-drill/wall-crafter/solid-pump đã sửa ở Bug thật thứ 6) vẫn CHƯA
+BAO GIỜ gọi `_ensure_powered()`. User yêu cầu rõ: "cần, nhưng fix vụ điện
+trước, nối điện vào mạng lưới điện gần nhất" -- tức trước khi tự xây
+generator mới, phải thử BẮC CẦU vào mạng điện đã có sẵn trên map trước.
+
+### Đã làm
+
+`bot/planner.py`: `_find_power_bridge_spot(grid, near, preferences)` -- tìm
+chỗ đặt 1 power-node gần `near` mà khi đặt xong sẽ `_power_linked` (xem
+`simulator/sim.py`) tới ít nhất 1 building có điện ĐÃ CÓ SẴN trên map
+(generator hoặc power-node khác), trả về `None` nếu map chưa có điện gì
+hoặc không tìm được chỗ trong tầm bất kỳ cái nào. Viết lại toàn bộ
+`_ensure_powered()`: (1) sớm return nếu `power_input<=0` hoặc đã đủ điện;
+(2) thử bắc cầu TRƯỚC, đo lại satisfaction sau khi bắc cầu, return sớm nếu
+đã đủ -- KHÔNG xây gì thêm; (3) chỉ khi (1) không bắc cầu được HAY (2) bắc
+cầu xong vẫn thiếu công suất, mới tự đặt 1 combustion-generator MỚI (đặt
+gần chính power-node vừa bắc cầu nếu có, để nối chung 1 mạng thay vì tách
+riêng) + drill than dành riêng; (4) bỏ qua bước đặt power-node cuối nếu đã
+bắc cầu ở bước 2 (tránh đặt trùng). Thêm gọi `_ensure_powered()` vào ĐÚNG
+nhánh `"drill"` gốc (gap mà user vừa phát hiện) và nhánh `"pump"` (hiện là
+no-op vì `mechanical-pump.power_input=0`, thêm cho nhất quán/tương lai).
+
+### Test
+
+`bot/power_bridge_demo.py` (3 kịch bản, dùng số đo THẬT qua
+`evaluate_layout()` chứ không giả định): (1) map chưa có điện gì -> vẫn tự
+xây generator mới như hành vi cũ (không đổi); (2) đã có sẵn mạng điện DƯ
+công suất gần đó (2 combustion-generator dựng tay, đo được ~82.3/s > 66/s
+cần) -> chỉ bắc cầu ĐÚNG 1 power-node, generator mới đặt = 0,
+`power_satisfaction` đo được = 1.0; (3) mạng điện có sẵn nhưng NGOÀI tầm bắc
+cầu (power_range=6) -> vẫn tự xây generator mới độc lập, không "bỏ cuộc" vì
+thấy có điện ở đâu đó trên map. Regression: 32/32 script pass sau khi thêm.
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- Vẫn KHÔNG tự tính chính xác công suất cần cho lưới điện phức tạp nhiều
+  building -- fallback chỉ xây ĐÚNG 1 generator "đủ dùng khiêm tốn" mỗi lần
+  gọi, có thể vẫn thiếu nếu 1 building đơn lẻ cần quá nhiều điện (vd
+  laser-drill 66/s > 1 combustion-generator fully-fed tối đa ~41-60/s tuỳ
+  độ phủ than) -- xem `bot/liquid_boost_demo.py` kịch bản 3 gặp đúng trường
+  hợp này (đo được `power_satisfaction≈0.62`, không phải 1.0, dù đã fallback
+  xây generator).
+- Bán kính bắc cầu (`power_range`) tính theo khoảng cách Euclidean tròn gần
+  đúng, không phải tia laser hình chữ nhật chính xác như `PowerNode.java`
+  thật (đã ghi từ trước, xem `_power_linked` docstring).
+
+## Liquid boost (Drill.java consumeLiquid(...).boost()) + lệnh "phủ kín mỏ"
+
+Bắt đầu từ câu hỏi "nếu ở dưới nền đất bự và có nhiều quặng, 1 drill là
+không đủ phủ hết, bot có biết đặt lên nền đó nhiều drill không hay chỉ 1" --
+xác nhận (đọc code) là CHỈ 1 (mỗi lệnh xây chỉ đặt đúng 1 drill dù mỏ to cỡ
+nào, `find_drill_spot()` trả về ngay ô hợp lệ ĐẦU TIÊN rồi dừng). User xác
+nhận muốn thêm, kèm yêu cầu: "tương lai mỗi Drill Laser hoặc cao hơn sẽ phải
+cần thêm 1 nguồn nước từ drill water hoặc từ 1 đường ống, phải tối ưu cái
+đó".
+
+### Sửa giả định sai ban đầu của user (đã tra `Blocks.java` thật trước khi code)
+
+User giả định chỉ "Laser trở lên" mới cần nước -- SAI. Tải thật
+`core/src/mindustry/content/Blocks.java`, xác nhận CẢ 4 tier
+(mechanical/pneumatic/laser/blast-drill) đều có
+`consumeLiquid(Liquids.water, X).boost()`:
+
+```java
+mechanicalDrill: consumeLiquid(Liquids.water, 0.05f).boost();       // 1.6x (mặc định Drill.liquidBoostIntensity)
+pneumaticDrill:  consumeLiquid(Liquids.water, 3.5f/60f).boost();    // 1.6x
+laserDrill:      consumeLiquid(Liquids.water, 0.08f).boost();       // 1.6x
+blastDrill:      consumeLiquid(Liquids.water, 0.1f).boost();        // 1.8x (ghi đè -- comment thật: "more than the laser drill")
+```
+
+`.boost()` nghĩa là OPTIONAL (khác `consumePower()` bắt buộc) -- công thức
+thật `speed = lerp(1.0, liquidBoostIntensity, optionalEfficiency)`, không có
+nước drill vẫn chạy tốc độ nền, có nước thì nhân thêm.
+
+Phát hiện thêm (ngoài phạm vi sửa lần này, ghi rõ để không quên):
+`impact-drill` (BurstDrill) thật có 1 `consumeLiquid(Liquids.water,
+10f/60f)` KHÔNG có `.boost()` -- tức BẮT BUỘC, khác hẳn booster tuỳ chọn của
+nó (`consumeLiquid(Liquids.ozone, 3f/60f).boost()`, đã parse đúng vì có
+`.boost()`). Parser hiện tại (đúng chủ đích) CHỈ bắt các `consumeLiquid(...)
+.boost()` -- consumeLiquid bắt buộc riêng này của impact-drill/eruption-
+drill CHƯA được model, khiến rate 2 block đó có thể bị tính CAO HƠN thật nếu
+không cấp nước (vì thiếu 1 điều kiện chặn cứng). Không sửa lần này (nằm
+ngoài yêu cầu ban đầu của user, cần thêm field/cơ chế "required liquid cho
+drill" riêng, khác hẳn field boost hiện có).
+
+### Đã làm
+
+`simulator/buildings.py`: `BuildingType.boost_liquid`/`boost_amount`
+(thô/tick, giống quy ước `pump_amount`)/`boost_intensity` (default 1.6).
+`tools/generate_catalog.py`: `parse_drill_boost()` (regex bắt đúng
+`consumeLiquid(Liquids.X, Y).boost()`, bỏ qua consumeLiquid KHÔNG có
+`.boost()`), field `liquidBoostIntensity` override. `simulator/sim.py`:
+`compute()` nhánh `"drill"` nhân thêm `1 + (boost_intensity-1)*hiệu_suất`
+sau rate nền, hiệu_suất tính từ `liquid_in_edges` giống hệt cách factory
+tính `recipe.liquid_inputs` (không phải nhị phân, lerp liên tục theo tỉ lệ
+nước THẬT nhận được).
+
+`bot/planner.py`: `_try_boost_with_water(grid, actions, drill, preferences)`
+-- KHÔNG BẮT BUỘC (khác `_ensure_powered`), không tìm/nối được nước thì bỏ
+qua ÊM, không raise lỗi. Thứ tự ưu tiên: (1) producer ĐÃ CÓ trên map (dùng
+`_route_or_branch_from_producer`, khiến NHIỀU drill gọi hàm này lần lượt tự
+động DÙNG CHUNG 1 nguồn qua router thay vì mỗi cái 1 nguồn riêng -- đây
+chính là phần "tối ưu" user yêu cầu, không cần code riêng); (2) tile liquid
+thật chưa khai thác gần đó -- xây `mechanical-pump` mới; (3) không có liquid
+tile thật -- thử `water-extractor` (SolidPump, đọc attribute) nếu catalog
+có loại solid-pump nào sinh đúng liquid cần; (4) không có gì cả -- bỏ qua.
+Gọi từ nhánh `"drill"` của `plan_build()` ngay sau `_ensure_powered`.
+
+`plan_fill_ore(grid, command, scorer, preferences)` -- lệnh "phủ kín mỏ":
+lặp lại đúng logic chọn-chỗ-đặt của nhánh `"drill"` (tìm ore chưa khai thác
+-> tìm chỗ đặt -> đặt + cấp điện + boost nước + nối core) cho tới khi
+`find_drill_spot()` không còn chỗ nào -- số ứng viên "chưa khai thác" giảm
+chặt mỗi vòng lặp (building vừa đặt chiếm `_by_tile`) nên chắc chắn dừng,
+không cần giới hạn số vòng lặp thủ công. `plan_build()` tự dispatch sang
+hàm này nếu `command.get("fill")` là `True` -- mọi call site hiện có (kể cả
+`bot/log_learning.py`, demo cũ) không cần sửa gì, tự động tương thích.
+`bot/command_parser.py`: `FILL_PHRASES` ("phủ kín mỏ", "phủ kín", "hết mỏ",
+"toàn bộ mỏ"...) -- chỉ áp dụng cho drill (có `ore_target`), đặt cờ
+`command["fill"]=True`.
+
+### Bug thật thứ 8 -- `_route_or_branch_from_producer()`/`plan_split()` hardcode "belt" (item), dùng cho liquid ra sai kết quả
+
+Phát hiện khi viết demo cho `_try_boost_with_water()`: gọi hàm 2 lần liên
+tiếp cho 2 drill (drill #2 lẽ ra phải TÌM THẤY pump của drill #1 rồi bắc
+cầu) -- kết quả drill #2 không nhận được nước gì cả, dù không có lỗi nào
+raise. Truy ra: `trace_belt_path()` (dùng trong
+`_route_or_branch_from_producer` để kiểm "output_tile của producer đã dẫn
+đi đâu chưa") hardcode kiểm `b.type.kind != "belt"` -- ĐÚNG cho conveyor
+(kind="belt"), nhưng conduit thật có `kind="liquid-belt"` (khác hẳn), nên
+hàm dừng SAI ngay tại Ô CONDUIT ĐẦU TIÊN, tưởng nhầm nó là "đích", rồi gọi
+`plan_split()` chia nhánh với router+conveyor SAI LOẠI (item, không phải
+liquid) -- item router không hiểu conduit, kết quả: đường nước bị âm thầm
+cắt đứt, không báo lỗi gì (vì `_try_boost_with_water` cố tình bọc try/except
+RuntimeError để không chặn drill chính -- nuốt luôn cả lỗi ngầm này).
+
+Sửa: `trace_belt_path()` (`simulator/sim.py`) thêm tham số `belt_kind:
+str = "belt"` (mặc định giữ nguyên hành vi cũ cho mọi call site item hiện
+có), so `b.type.kind != belt_kind` thay vì hardcode. `_clear_belt_chain()`/
+`plan_split()` (`bot/planner.py`) cũng thêm tham số tương tự
+(`belt_kind`/`belt_type`+`router_type`, default `None` -> conveyor+router,
+giữ nguyên hành vi cũ). `_route_or_branch_from_producer()` giờ tự suy ra
+`belt_kind` từ chính `belt_type` được truyền vào, và chọn `router_type`
+đúng (`CATALOG["liquid-router"]` nếu `belt_kind=="liquid-belt"`, `CATALOG
+["router"]` nếu không) -- `_trace_branching()` (nơi thật sự tính throughput)
+KHÔNG phân biệt `router`/`liquid-router` (cả 2 đều `kind="router"`, chỉ khác
+tên hiển thị đúng loại building thật), nên không cần sửa gì ở đó.
+
+### Test
+
+`bot/liquid_boost_demo.py` (4 kịch bản): không nước -> đúng rate nền, không
+lỗi; đủ nước (1 pump riêng, nối qua `_route()` thật) -> nhân đúng
+`boost_intensity`; 2 drill gọi `_try_boost_with_water()` lần lượt -> TỰ ĐỘNG
+dùng chung 1 pump (không xây pump thứ 2), mỗi drill nhận phần nước THEO ĐÚNG
+số cạnh chạm router (không phải luôn chia đều 50/50 -- 1 building lớn có
+thể chạm router ở nhiều cạnh cùng lúc), boost lerp đúng tỉ lệ; `blast-drill`
+có `boost_intensity=1.8` ghi đè đúng, 3 tier còn lại dùng default 1.6.
+
+`bot/fill_ore_demo.py` (4 kịch bản): đối chứng lệnh xây thường vẫn chỉ đặt
+1 drill (chưa đổi); "phủ kín mỏ" đặt NHIỀU drill, dừng đúng lúc hết chỗ
+(verify lại bằng `find_drill_spot()` thật, không còn chỗ nào bị bỏ sót);
+mỗi drill đã tự nối belt hoạt động thật (throughput > 0, không chỉ đặt
+suông); nhiều drill cần nước qua "phủ kín mỏ" tự động dùng CHUNG 1 nguồn
+(2 drill, 1 pump, cả 2 xác nhận có `liquid_connections` trỏ tới).
+
+Regression: 33/33 script pass sau khi thêm (32 cũ + 2 demo mới, trừ 1 script
+`power_bridge_demo.py` đã tính vào 32 cũ).
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- `impact-drill`/`eruption-drill` (BurstDrill) có `consumeLiquid` BẮT BUỘC
+  riêng (không có `.boost()`) CHƯA model -- xem mục "Sửa giả định sai" ở
+  trên.
+- `plan_fill_ore()` không tối ưu BỐ CỤC giữa các drill (không cố đặt sát
+  nhau để tiết kiệm diện tích, không gom nhiều drill dùng chung 1 trục belt
+  chính về core) -- mỗi drill vẫn tự nối belt RIÊNG về core, có thể ra nhiều
+  đường belt chồng chéo thay vì 1 đường gom chung. Chỉ tối ưu được phần
+  NGUỒN NƯỚC dùng chung (đúng yêu cầu ban đầu của user), chưa tối ưu belt
+  item.
+- Trên map/mỏ lớn + nhiều drill cần điện+nước đồng thời, dễ gặp giới hạn
+  pathfinding đã biết từ trước (hạ tầng điện/nước của drill đặt trước có
+  thể vô tình chặn hành lang belt của drill đặt sau nếu không gian hẹp) --
+  không phải bug riêng của tính năng này, xem các "giới hạn pathfinding"
+  đã ghi ở nhiều mục khác trong file này (`solid_pump_demo.py`,
+  `power_bridge_demo.py`...). `bot/fill_ore_demo.py` né bằng cách chọn map
+  đủ rộng/mỏ vừa phải, không phải bằng chứng nó không xảy ra trên map lớn
+  hơn/dày đặc hơn thật.
+- Không tính `drillMultipliers` (hệ số tốc độ riêng từng item) -- giới hạn
+  đã ghi từ mục BeamDrill/WallCrafter, vẫn áp dụng.

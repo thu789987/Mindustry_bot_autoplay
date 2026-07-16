@@ -43,6 +43,25 @@ BUILDING_PHRASES = {
     "impact-drill": "impact-drill",
     "máy khoan phun trào": "eruption-drill",
     "eruption-drill": "eruption-drill",
+    # BeamDrill.java (bắn tia dò ore từ mỗi cạnh, không phải diện tích chân
+    # đế -- xem sim.py _beam_drill_output_rate). Phải nói RÕ "plasma" vì
+    # cơ chế khác hẳn "máy khoan" thường, không dùng chung sentinel "drill".
+    "máy khoan plasma lớn": "large-plasma-bore",
+    "large-plasma-bore": "large-plasma-bore",
+    "máy khoan plasma": "plasma-bore",
+    "plasma-bore": "plasma-bore",
+    # WallCrafter.java (đọc attribute từ đá/tường tự nhiên kề cạnh xoay mặt
+    # tới, luôn ra cát -- xem sim.py _wall_crafter_output_rate). Không cần
+    # nói rõ ore vì cố định sẵn (wall_attribute/wall_output của building).
+    "máy nghiền vách đá lớn": "large-cliff-crusher",
+    "large-cliff-crusher": "large-cliff-crusher",
+    "máy nghiền vách đá": "cliff-crusher",
+    "cliff-crusher": "cliff-crusher",
+    # SolidPump.java (đọc attribute trên nền đất, quét cả chân đế -- xem
+    # sim.py _solid_pump_output_rate). Cùng tinh thần wall-crafter: không
+    # cần chỉ định liquid_target, cố định theo catalog (luôn ra nước).
+    "máy hút nước": "water-extractor",
+    "water-extractor": "water-extractor",
     "bộ lọc": "sorter",
     "sorter": "sorter",
     "bơm": "mechanical-pump",
@@ -154,7 +173,28 @@ def _find_item(text: str):
 _DRILL_NAMES = {
     "drill", "mechanical-drill", "pneumatic-drill", "laser-drill",
     "blast-drill", "impact-drill", "eruption-drill",
+    # BeamDrill: cũng cần ore_target người dùng chỉ định (khác wall-crafter
+    # -- luôn ra cát cố định, không cần hỏi), xem bot/planner.py:
+    # find_beam_drill_spot.
+    "plasma-bore", "large-plasma-bore",
 }
+
+# Bug thật (user tự phát hiện): "drill cấp 4 đào chì" bị âm thầm rớt về
+# sentinel "drill" -- không có phrase nào bắt SỐ tier, chỉ bắt được TÊN
+# riêng ("máy khoan laser"). select_drill_type() (planner.py) sau đó tự
+# chọn tier RẺ NHẤT đủ dùng, phớt lờ hoàn toàn ý người dùng. Map số tier
+# thật (xem simulator/generated_catalog.py) -> tên drill đúng tier đó, để
+# "cấp N"/"tier N" ép ĐÚNG tier thay vì bị bỏ qua.
+DRILL_TIER_NAMES = {
+    2: "mechanical-drill", 3: "pneumatic-drill", 4: "laser-drill",
+    5: "blast-drill", 6: "impact-drill", 7: "eruption-drill",
+}
+TIER_RE = re.compile(r"(?:cấp|tier)\s*(\d+)")
+
+# "phủ kín mỏ than" -- lặp đặt drill tới khi hết mỏ (bot/planner.py:
+# plan_fill_ore), khác lệnh xây thường CHỈ đặt đúng 1 drill dù mỏ to cỡ
+# nào. Chỉ áp dụng cho drill (có ore_target) -- xem docstring plan_fill_ore.
+FILL_PHRASES = ("phủ kín mỏ", "phủ kín", "phủ hết mỏ", "phủ hết", "hết mỏ", "toàn bộ mỏ", "cả mỏ")
 
 
 def _find_hint(text: str, building: str = None):
@@ -234,6 +274,16 @@ def parse_command(text: str) -> dict:
     if building is None:
         return {"action": "unknown", "raw": text}
 
+    if action == "build" and building in _DRILL_NAMES:
+        m = TIER_RE.search(normalized)
+        if m:
+            tier_name = DRILL_TIER_NAMES.get(int(m.group(1)))
+            if tier_name is not None:
+                # Số tier nói RÕ luôn thắng, kể cả khi _find_building() đã
+                # khớp 1 tên riêng khác (vd "máy khoan laser cấp 2" -- ưu
+                # tiên số 2 nói rõ hơn là suy luận từ tên).
+                building = tier_name
+
     command = {"action": action, "building": building}
 
     if action in ("delete", "rotate", "configure"):
@@ -261,6 +311,8 @@ def parse_command(text: str) -> dict:
                 command["ore_target"] = ORE_PHRASES[phrase]
                 break
         command["ore_location_hint"] = _find_location_hint(normalized)
+        if any(phrase in normalized for phrase in FILL_PHRASES):
+            command["fill"] = True
 
     if action == "build" and building == "mechanical-pump":
         liquid = _find_liquid(normalized)

@@ -8,12 +8,15 @@ Mindustry, nhưng không phải giải pháp tổng quát cho Java bất kỳ.
 
 3 lớp phủ:
 1. Cơ chế hiểu đầy đủ (rate/recipe tính được, planner đặt+nối được):
-   Drill/BurstDrill, Conveyor/ArmoredConveyor, GenericCrafter (cả item lẫn
-   liquid input), Sorter, Pump, Conduit/ArmoredConduit.
+   Drill/BurstDrill, BeamDrill (bắn tia dò ore từ mỗi cạnh, xem sim.py
+   _beam_drill_output_rate), WallCrafter (đọc attribute từ đá/tường tự
+   nhiên kề cạnh xoay mặt tới, xem sim.py _wall_crafter_output_rate),
+   SolidPump (giống WallCrafter nhưng quét CẢ chân đế thay vì 1 cạnh, xem
+   sim.py _solid_pump_output_rate), Conveyor/ArmoredConveyor, GenericCrafter
+   (cả item lẫn liquid input), Sorter, Pump, Conduit/ArmoredConduit.
 2. Cơ chế biết nhưng KHÔNG model (lý do ghi rõ trong SKIPPED, không phải bỏ
-   sót âm thầm): StackConveyor (cơ chế xếp chồng khác hẳn), BeamDrill (đào
-   theo tia thay vì diện tích chân đế), SolidPump (rút liquid cố định không
-   cần tile liquid), Pump tự tiêu thụ liquid (reinforced-pump).
+   sót âm thầm): StackConveyor (cơ chế xếp chồng khác hẳn), Pump tự tiêu
+   thụ liquid (reinforced-pump).
 3. Mọi block khác (turret/power/logic/unit/storage/defense/payload...):
    chỉ lưu tên+category+size vào GENERATED_OTHER, KHÔNG có recipe/rate --
    planner từ chối đặt loại này với lỗi rõ ràng thay vì đoán bừa. Xem
@@ -33,6 +36,23 @@ OUT_PATH = ROOT / "simulator" / "generated_catalog.py"
 TICKS_PER_SECOND = 60  # phải khớp simulator/buildings.py TICKS_PER_SECOND
 
 DRILL_CLASSES = {"Drill", "BurstDrill"}
+# BeamDrill.java: bắn tia dò ore từ mỗi cạnh (range ô), không phải diện tích
+# chân đế như Drill -- công thức khác hẳn nên tách riêng, xem sim.py
+# _beam_drill_output_rate. Không có hardnessDrillMultiplier (chỉ có `tier`
+# làm ngưỡng cứng), nên KHÔNG gộp vào DRILL_CLASSES.
+BEAM_DRILL_CLASSES = {"BeamDrill"}
+# WallCrafter.java (vd cliff-crusher/large-cliff-crusher): đọc `attribute`
+# (weight số thực, đơn giản hoá nhị phân ở đây) từ đá/tường tự nhiên kề
+# cạnh đang xoay mặt tới, ra 1 item cố định (`output`) -- khác Drill/
+# BeamDrill (không dựa vào Item.hardness/ore_tiles), xem sim.py
+# _wall_crafter_output_rate.
+WALL_CRAFTER_CLASSES = {"WallCrafter"}
+# SolidPump.java (kế thừa Pump, vd water-extractor): giống Pump nhưng KHÔNG
+# cần tile.liquid khớp -- quét diện tích chân đế đếm tile mang đúng
+# attribute (Tile.attribute, giống WallCrafter nhưng quét CẢ CHÂN ĐẾ thay
+# vì 1 cạnh), ra 1 liquid CỐ ĐỊNH (`result`). Xem sim.py
+# _solid_pump_output_rate.
+SOLID_PUMP_CLASSES = {"SolidPump"}
 BELT_CLASSES = {"Conveyor", "ArmoredConveyor"}
 CRAFTER_CLASSES = {"GenericCrafter"}
 SORTER_CLASSES = {"Sorter"}
@@ -102,7 +122,7 @@ GENERATOR_CLASSES = {"ConsumeGenerator"}
 # bán kính laserRange (số ô) -- xem sim.py phần dựng mạng điện.
 POWER_NODE_CLASSES = {"PowerNode"}
 HANDLED_CLASSES = (
-    DRILL_CLASSES | BELT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
+    DRILL_CLASSES | BEAM_DRILL_CLASSES | WALL_CRAFTER_CLASSES | SOLID_PUMP_CLASSES | BELT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
     | PUMP_CLASSES | CONDUIT_CLASSES | ROUTER_CLASSES | JUNCTION_CLASSES
     | OVERFLOW_CLASSES | BRIDGE_CLASSES | MASS_DRIVER_CLASSES | UNLOADER_CLASSES
     | STORAGE_CLASSES | GENERATOR_CLASSES | POWER_NODE_CLASSES
@@ -111,8 +131,6 @@ HANDLED_CLASSES = (
 # Class biết tồn tại, cố ý không model -- lý do cụ thể ghi trong SKIPPED khi gặp
 KNOWN_UNMODELED = {
     "StackConveyor": "cơ chế xếp chồng nhiều item/ô, khác hẳn Conveyor thường",
-    "BeamDrill": "đào theo tia dọc 1 hướng (range), không phải diện tích chân đế như Drill",
-    "SolidPump": "rút 1 liquid cố định bất kể tile, không cần liquid tile khớp như Pump",
 }
 
 _CTOR_RE = re.compile(r'(\w+)\s*=\s*new\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*\{\{')
@@ -255,6 +273,52 @@ def parse_output(body, item_field_to_name):
     return item_field_to_name[item_ref][0], amount
 
 
+def parse_solid_pump_fields(body, liquid_field_to_name):
+    """SolidPump.java: `attribute = Attribute.X;` (như WallCrafter) và
+    `result = Liquids.X;` (liquid cố định sinh ra, cần tra
+    liquid_field_to_name khác parse_wall_crafter_fields dùng item)."""
+    m_attr = re.search(r"\battribute\s*=\s*Attribute\.(\w+)", body)
+    m_result = re.search(r"\bresult\s*=\s*Liquids\.(\w+)", body)
+    if not m_attr or not m_result:
+        return None
+    liquid_ref = m_result.group(1)
+    if liquid_ref not in liquid_field_to_name:
+        return None
+    return m_attr.group(1), liquid_field_to_name[liquid_ref][0]
+
+
+def parse_drill_boost(body, liquid_field_to_name):
+    """Drill.java: consumeLiquid(Liquids.X, Y).boost() -- booster KHÔNG BẮT
+    BUỘC (khác consumeLiquid thường dùng cho recipe.liquid_inputs bắt buộc
+    của factory, không có .boost() theo sau). Y là /tick (giống quy ước
+    consumePower/pump_amount thô) -- KHÔNG nhân 60 ở đây, sim.py tự nhân khi
+    cần lưu lượng/giây. Trả về (None, 0.0) nếu block này không có booster
+    (vd BurstDrill -- impact-drill/eruption-drill không hề gọi consumeLiquid)."""
+    m = re.search(rf"consumeLiquid\(Liquids\.(\w+),\s*({_EXPR})\)\.boost\(\)", body)
+    if not m:
+        return None, 0.0
+    liquid_ref = m.group(1)
+    if liquid_ref not in liquid_field_to_name:
+        return None, 0.0
+    return liquid_field_to_name[liquid_ref][0], _eval_expr(m.group(2))
+
+
+def parse_wall_crafter_fields(body, item_field_to_name):
+    """WallCrafter.java: `attribute = Attribute.X;` (tên attribute -- enum
+    RIÊNG của game, không phải Item, nhưng ở 2 block thật hiện có
+    (cliff-crusher/large-cliff-crusher) trùng tên với item sand nên giữ
+    nguyên chuỗi) và `output = Items.X;` (item thật, cần tra
+    item_field_to_name như parse_output)."""
+    m_attr = re.search(r"\battribute\s*=\s*Attribute\.(\w+)", body)
+    m_out = re.search(r"\boutput\s*=\s*Items\.(\w+)", body)
+    if not m_attr or not m_out:
+        return None
+    item_ref = m_out.group(1)
+    if item_ref not in item_field_to_name:
+        return None
+    return m_attr.group(1), item_field_to_name[item_ref][0]
+
+
 def main():
     items_java = (REFERENCE / "Items.java").read_text(encoding="utf-8")
     liquids_java = (REFERENCE / "Liquids.java").read_text(encoding="utf-8")
@@ -269,7 +333,7 @@ def main():
 
     drills, belts, factories, sorters, pumps, conduits, routers, skipped = [], [], [], [], [], [], [], []
     junctions, overflow_gates, bridges, mass_drivers, unloaders, storages = [], [], [], [], [], []
-    generators, power_nodes = [], []
+    generators, power_nodes, beam_drills, wall_crafters, solid_pumps = [], [], [], [], []
     handled_names = set()
 
     for varname, classname, blockname, body in handled_blocks:
@@ -278,14 +342,74 @@ def main():
         if classname in DRILL_CLASSES:
             tier = field_int(body, "tier")
             drill_time = field_float(body, "drillTime", default=300.0)
-            hardness_mult = field_float(body, "hardnessDrillMultiplier", default=50.0)
+            # BurstDrill.java tự đặt hardnessDrillMultiplier = 0f ở CẤP CLASS
+            # (đã xác nhận bằng cách tải source thật) -- impact-drill/
+            # eruption-drill không set lại field này trong thân {{ }} riêng
+            # (đã grep Blocks.java xác nhận), nên default phải là 0.0 cho
+            # BurstDrill, KHÁC với Drill thường (default thật là 50.0). Nếu
+            # dùng chung 1 default cho cả 2 class, impact-drill/eruption-drill
+            # sẽ bị tính sai công thức (hardness của item ảnh hưởng tới tốc
+            # độ đào trong khi thật ra không hề ảnh hưởng).
+            hardness_default = 0.0 if classname == "BurstDrill" else 50.0
+            hardness_mult = field_float(body, "hardnessDrillMultiplier", default=hardness_default)
             if tier is None:
                 skipped.append((blockname, classname, "thiếu tier"))
                 continue
             power_input = parse_power_input(body)
+            # Drill.java liquidBoostIntensity mặc định 1.6f (mechanical/
+            # pneumatic/laser dùng nguyên default, không ghi đè trong thân
+            # {{ }} riêng) -- blast-drill ghi đè thành 1.8f (đã grep xác nhận
+            # thật). BurstDrill (impact/eruption-drill) không hề gọi
+            # consumeLiquid() nên parse_drill_boost trả (None, 0.0) đúng.
+            boost_liquid, boost_amount = parse_drill_boost(body, liquid_field_to_name)
+            boost_intensity = field_float(body, "liquidBoostIntensity", default=1.6)
             drills.append({
                 "name": blockname, "size": size, "tier": tier, "drill_time": drill_time,
                 "hardness_multiplier": hardness_mult, "power_input": power_input,
+                "boost_liquid": boost_liquid, "boost_amount": boost_amount,
+                "boost_intensity": boost_intensity,
+            })
+            handled_names.add(blockname)
+
+        elif classname in BEAM_DRILL_CLASSES:
+            tier = field_int(body, "tier")
+            drill_time = field_float(body, "drillTime", default=200.0)  # default thật BeamDrill.java
+            beam_range = field_int(body, "range", default=5)  # default thật BeamDrill.java
+            if tier is None:
+                skipped.append((blockname, classname, "thiếu tier"))
+                continue
+            power_input = parse_power_input(body)
+            beam_drills.append({
+                "name": blockname, "size": size, "tier": tier, "drill_time": drill_time,
+                "beam_range": beam_range, "power_input": power_input,
+            })
+            handled_names.add(blockname)
+
+        elif classname in WALL_CRAFTER_CLASSES:
+            drill_time = field_float(body, "drillTime", default=150.0)  # default thật WallCrafter.java
+            wall_fields = parse_wall_crafter_fields(body, item_field_to_name)
+            if wall_fields is None:
+                skipped.append((blockname, classname, "thiếu attribute/output"))
+                continue
+            attribute, output_item = wall_fields
+            power_input = parse_power_input(body)
+            wall_crafters.append({
+                "name": blockname, "size": size, "drill_time": drill_time,
+                "attribute": attribute, "output_item": output_item, "power_input": power_input,
+            })
+            handled_names.add(blockname)
+
+        elif classname in SOLID_PUMP_CLASSES:
+            pump_amount = field_float(body, "pumpAmount", default=0.1)  # default thật Pump.java (cha)
+            solid_fields = parse_solid_pump_fields(body, liquid_field_to_name)
+            if solid_fields is None:
+                skipped.append((blockname, classname, "thiếu attribute/result"))
+                continue
+            attribute, liquid = solid_fields
+            power_input = parse_power_input(body)
+            solid_pumps.append({
+                "name": blockname, "size": size, "pump_amount": pump_amount,
+                "attribute": attribute, "liquid": liquid, "power_input": power_input,
             })
             handled_names.add(blockname)
 
@@ -397,7 +521,10 @@ def main():
             power_nodes.append({"name": blockname, "size": size, "power_range": laser_range})
             handled_names.add(blockname)
 
-    print(f"  -> drill: {len(drills)}, belt: {len(belts)}, factory: {len(factories)}, "
+    print(f"  -> drill: {len(drills)}, beam-drill: {len(beam_drills)}, wall-crafter: {len(wall_crafters)}, "
+          f"solid-pump: {len(solid_pumps)}, "
+          f"belt: {len(belts)}, "
+          f"factory: {len(factories)}, "
           f"sorter: {len(sorters)}, pump: {len(pumps)}, conduit: {len(conduits)}, "
           f"router: {len(routers)}, junction: {len(junctions)}, overflow-gate: "
           f"{len(overflow_gates)}, bridge: {len(bridges)}, mass-driver: {len(mass_drivers)}, "
@@ -425,7 +552,7 @@ def main():
     write_output(
         item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
         conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
-        generators, power_nodes, other, skipped,
+        generators, power_nodes, beam_drills, wall_crafters, solid_pumps, other, skipped,
     )
     print(f"đã ghi {OUT_PATH}")
 
@@ -433,7 +560,7 @@ def main():
 def write_output(
     item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
     conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
-    generators, power_nodes, other, skipped,
+    generators, power_nodes, beam_drills, wall_crafters, solid_pumps, other, skipped,
 ):
     lines = [
         '"""TỰ ĐỘNG SINH bởi tools/generate_catalog.py -- đừng sửa tay, chạy lại script.',
@@ -461,10 +588,34 @@ def write_output(
     lines.append("GENERATED_BUILDINGS = {")
 
     for d in sorted(drills, key=lambda b: b["name"]):
+        boost_part = ""
+        if d["boost_liquid"] is not None:
+            boost_part = (
+                f', boost_liquid="{d["boost_liquid"]}", boost_amount={d["boost_amount"]}, '
+                f'boost_intensity={d["boost_intensity"]}'
+            )
         lines.append(
             f'    "{d["name"]}": BuildingType("{d["name"]}", size={d["size"]}, kind="drill", '
             f'drill_time={d["drill_time"]}, hardness_multiplier={d["hardness_multiplier"]}, tier={d["tier"]}, '
-            f'power_input={d["power_input"]}),'
+            f'power_input={d["power_input"]}{boost_part}),'
+        )
+    for bd in sorted(beam_drills, key=lambda b: b["name"]):
+        lines.append(
+            f'    "{bd["name"]}": BuildingType("{bd["name"]}", size={bd["size"]}, kind="beam-drill", '
+            f'drill_time={bd["drill_time"]}, tier={bd["tier"]}, beam_range={bd["beam_range"]}, '
+            f'power_input={bd["power_input"]}),'
+        )
+    for wc in sorted(wall_crafters, key=lambda b: b["name"]):
+        lines.append(
+            f'    "{wc["name"]}": BuildingType("{wc["name"]}", size={wc["size"]}, kind="wall-crafter", '
+            f'drill_time={wc["drill_time"]}, wall_attribute="{wc["attribute"]}", '
+            f'wall_output="{wc["output_item"]}", power_input={wc["power_input"]}),'
+        )
+    for sp in sorted(solid_pumps, key=lambda b: b["name"]):
+        lines.append(
+            f'    "{sp["name"]}": BuildingType("{sp["name"]}", size={sp["size"]}, kind="solid-pump", '
+            f'pump_amount={sp["pump_amount"]}, solid_pump_attribute="{sp["attribute"]}", '
+            f'solid_pump_liquid="{sp["liquid"]}", power_input={sp["power_input"]}),'
         )
     for b in sorted(belts, key=lambda b: b["name"]):
         lines.append(f'    "{b["name"]}": BuildingType("{b["name"]}", size={b["size"]}, kind="belt", base_rate={b["base_rate"]}),')

@@ -4,9 +4,16 @@ from .buildings import DIRECTIONS, ITEMS, TICKS_PER_SECOND
 from .grid import Grid, PlacedBuilding
 
 
-def trace_belt_path(grid: Grid, x: int, y: int):
+def trace_belt_path(grid: Grid, x: int, y: int, belt_kind: str = "belt"):
     """Follow a chain of conveyor tiles starting at (x, y), each belt continuing
     in its own facing direction, until a non-belt building or a dead end is hit.
+
+    `belt_kind` mặc định "belt" (conveyor -- giữ nguyên hành vi cũ cho mọi
+    call site item hiện có). Truyền "liquid-belt" để trace CONDUIT thay vì
+    conveyor (xem bot/planner.py:_route_or_branch_from_producer -- bug thật
+    phát hiện khi thêm liquid boost cho drill: hàm này trước đây LUÔN
+    hardcode "belt", khiến trace dừng SAI ngay tại ô conduit đầu tiên khi
+    dùng cho liquid, vì conduit.kind="liquid-belt" != "belt").
 
     Returns (destination_building, bottleneck_capacity) or None if the path
     runs off the map or into empty space.
@@ -20,7 +27,7 @@ def trace_belt_path(grid: Grid, x: int, y: int):
         b = grid.building_at(x, y)
         if b is None:
             return None  # dead end
-        if b.type.kind != "belt":
+        if b.type.kind != belt_kind:
             return b, capacity
         capacity = min(capacity, b.type.base_rate)
         dx, dy = DIRECTIONS[b.rotation]
@@ -182,7 +189,7 @@ def _trace_branching(grid: Grid, pos, capacity, belt_kind: str, item_name=None, 
     return [(b, capacity)]
 
 
-SOURCE_KINDS = ("drill", "factory", "unloader")
+SOURCE_KINDS = ("drill", "factory", "unloader", "beam-drill", "wall-crafter")
 
 
 def find_connections(grid: Grid):
@@ -206,7 +213,7 @@ def find_connections(grid: Grid):
             dx, dy = DIRECTIONS[b.rotation]
             synthetic_came_from = (ox - dx, oy - dy)
             for dest, cap in _trace_branching(
-                grid, (ox, oy), float("inf"), "belt", item_name=produced_item(b), came_from=synthetic_came_from
+                grid, (ox, oy), float("inf"), "belt", item_name=produced_item(grid, b), came_from=synthetic_came_from
             ):
                 if dest is not b:
                     connections.append((b, dest, cap))
@@ -220,7 +227,7 @@ def find_liquid_connections(grid: Grid):
     nhánh qua router như find_connections (dùng chung _trace_branching)."""
     connections = []
     for b in grid.unique_buildings():
-        if b.type.kind == "pump":
+        if b.type.kind in ("pump", "solid-pump"):
             ox, oy = b.output_tile()
             dx, dy = DIRECTIONS[b.rotation]
             synthetic_came_from = (ox - dx, oy - dy)
@@ -230,12 +237,18 @@ def find_liquid_connections(grid: Grid):
     return connections
 
 
-def produced_item(b: PlacedBuilding):
+def produced_item(grid: Grid, b: PlacedBuilding):
     """What item type a building's output belt carries -- needed so a
     multi-input factory can tell its incoming belts apart (e.g. coal vs
-    sand feeding a silicon smelter) instead of summing unrelated items."""
+    sand feeding a silicon smelter) instead of summing unrelated items.
+    Takes `grid` (not just `b`) because beam-drill auto-detects its item by
+    scanning tiles, unlike a regular drill's pre-assigned `ore_target`."""
     if b.type.kind == "drill":
         return b.ore_target
+    if b.type.kind == "beam-drill":
+        return _beam_drill_target(grid, b)
+    if b.type.kind == "wall-crafter":
+        return b.type.wall_output
     if b.type.kind == "factory":
         return b.type.recipe.output_item
     if b.type.kind == "unloader":
@@ -246,9 +259,11 @@ def produced_item(b: PlacedBuilding):
 def produced_liquid(b: PlacedBuilding):
     """What liquid a pump's output conduit carries. No factory in our
     catalog has a modeled liquid output (see generated_catalog.py SKIPPED),
-    so pumps are the only liquid source."""
+    so pumps/solid-pumps are the only liquid sources."""
     if b.type.kind == "pump":
         return b.liquid_target
+    if b.type.kind == "solid-pump":
+        return b.type.solid_pump_liquid
     return None
 
 
@@ -269,6 +284,125 @@ def _drill_output_rate(grid: Grid, b: PlacedBuilding):
     if drill_time <= 0:
         return 0.0
     return TICKS_PER_SECOND * count / drill_time
+
+
+def _beam_drill_scan(grid: Grid, b: PlacedBuilding):
+    """Xấp xỉ BeamDrill.java: bắn 1 tia dò ore từ MỖI vị trí dọc theo cả 4
+    cạnh (không phải diện tích chân đế) -- size=1 (plasma-bore) có 4 tia,
+    size=2 (large-plasma-bore) có 8 tia (2 tia/cạnh x 4 cạnh). Mỗi tia quét
+    tối đa `beam_range` ô, dừng ở Ô ORE ĐẦU TIÊN gặp được.
+
+    Đơn giản hoá đã ghi rõ: BeamDrill.java thật dừng ở "first SOLID tile"
+    (tường/vách đá Erekir mang ore), simulator này không mô hình wall-ore
+    riêng (chỉ có ore_tiles kiểu floor overlay Serpulo, xem grid.py) nên
+    dùng luôn ore_tiles hiện có làm xấp xỉ mục tiêu tia bắn tới.
+
+    Trả về list tên item (1 phần tử/tia có bắn trúng ore hợp lệ theo tier,
+    tia không trúng gì hoặc ore quá cứng thì bỏ qua, không phải "0 item")."""
+    s = b.type.size
+    hits = []
+    for direction, (dx, dy) in enumerate(DIRECTIONS):
+        if dx == 1:
+            starts = [(b.x + s, b.y + i) for i in range(s)]
+        elif dx == -1:
+            starts = [(b.x - 1, b.y + i) for i in range(s)]
+        elif dy == 1:
+            starts = [(b.x + i, b.y + s) for i in range(s)]
+        else:
+            starts = [(b.x + i, b.y - 1) for i in range(s)]
+
+        for sx, sy in starts:
+            x, y = sx, sy
+            for _ in range(b.type.beam_range):
+                if not grid.in_bounds(x, y):
+                    break
+                ore = grid.tiles[y][x].ore
+                if ore is not None:
+                    item = ITEMS.get(ore)
+                    if item is not None and item.hardness <= b.type.tier:
+                        hits.append(ore)
+                    break  # dừng ở ore ĐẦU TIÊN gặp, dù có hợp tier hay không
+                x, y = x + dx, y + dy
+    return hits
+
+
+def _beam_drill_target(grid: Grid, b: PlacedBuilding):
+    """Item mà toàn bộ tia đang bắn trúng, hoặc None nếu 0 tia trúng hoặc
+    trúng LẪN LỘN nhiều loại (BeamDrill.java: "khi có nhiều hơn 1 loại item,
+    coi như không có item nào" -- toàn bộ building ngừng sản xuất, không
+    phải lấy loại chiếm đa số)."""
+    hits = _beam_drill_scan(grid, b)
+    if not hits:
+        return None
+    distinct = set(hits)
+    if len(distinct) > 1:
+        return None
+    return hits[0]
+
+
+def _beam_drill_output_rate(grid: Grid, b: PlacedBuilding):
+    """rate = facingAmount / drillTime (không có hardness_multiplier -- xem
+    ghi chú beam_range trong buildings.py). facingAmount = số tia đang bắn
+    trúng ĐÚNG loại item thống nhất."""
+    item_name = _beam_drill_target(grid, b)
+    if item_name is None:
+        return 0.0
+    facing_amount = _beam_drill_scan(grid, b).count(item_name)
+    if b.type.drill_time <= 0:
+        return 0.0
+    return TICKS_PER_SECOND * facing_amount / b.type.drill_time
+
+
+def _wall_crafter_output_rate(grid: Grid, b: PlacedBuilding):
+    """Xấp xỉ WallCrafter.java (vd cliff-crusher/large-cliff-crusher): CHỈ
+    quét dọc cạnh đang xoay mặt tới (KHÔNG phải 4 cạnh như BeamDrill), cộng
+    dồn hiệu suất từ các ô đá/tường tự nhiên mang đúng `wall_attribute`
+    (Tile.attribute, xem grid.py) -- game thật cộng dồn WEIGHT thực, ở đây
+    đơn giản hoá +1.0/ô khớp (nhị phân, giống ore/liquid, xem README giới
+    hạn). rate = (60/drill_time) * hiệu_suất, không có booster (item/liquid
+    boost optional trong game thật, không model -- giống drill/pump khác)."""
+    if b.type.wall_attribute is None or b.type.wall_output is None:
+        return 0.0
+    dx, dy = DIRECTIONS[b.rotation]
+    s = b.type.size
+    if dx == 1:
+        checked = [(b.x + s, b.y + i) for i in range(s)]
+    elif dx == -1:
+        checked = [(b.x - 1, b.y + i) for i in range(s)]
+    elif dy == 1:
+        checked = [(b.x + i, b.y + s) for i in range(s)]
+    else:
+        checked = [(b.x + i, b.y - 1) for i in range(s)]
+
+    efficiency = sum(
+        1.0
+        for x, y in checked
+        if grid.in_bounds(x, y) and grid.tiles[y][x].attribute == b.type.wall_attribute
+    )
+    if efficiency <= 0 or b.type.drill_time <= 0:
+        return 0.0
+    return TICKS_PER_SECOND / b.type.drill_time * efficiency
+
+
+def _solid_pump_output_rate(grid: Grid, b: PlacedBuilding):
+    """Xấp xỉ SolidPump.java (vd water-extractor): công thức thật là
+    `fraction = validTiles + boost + (attribute?.env() ?: 0)` (validTiles =
+    số tile nền hợp lệ CHUNG, boost = tổng trọng số attribute thực trên các
+    tile đó, attribute.env() = hằng số môi trường riêng loại attribute) --
+    quá nhiều thành phần không rõ ràng đầy đủ từ source để model chính xác.
+    Đơn giản hoá NHỊ PHÂN giống hệt _pump_output_rate/_drill_output_rate
+    (đếm tile khớp, không phải trọng số thực): rate = 60 * pump_amount *
+    số_tile_khớp_attribute_dưới_chân_đế. Bỏ qua hẳn phần "validTiles nền
+    hợp lệ không cần khớp attribute" của công thức thật -- xem
+    NEXT_STEPS.md."""
+    if b.type.solid_pump_attribute is None:
+        return 0.0
+    count = sum(
+        1
+        for x, y in b.footprint()
+        if grid.in_bounds(x, y) and grid.tiles[y][x].attribute == b.type.solid_pump_attribute
+    )
+    return TICKS_PER_SECOND * b.type.pump_amount * count
 
 
 def _pump_output_rate(grid: Grid, b: PlacedBuilding):
@@ -368,7 +502,7 @@ def _build_power_networks(buildings):
     return {id(b): find(id(b)) for b in capable}
 
 
-def _generator_power_rate(b: PlacedBuilding, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
+def _generator_power_rate(grid: Grid, b: PlacedBuilding, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
     """Xấp xỉ ConsumeGenerator.java: chọn nhiên liệu cháy tốt nhất (flammability
     cao nhất) trong số item được belt dẫn tới, giới hạn bởi tốc độ đốt tối đa
     (1 item mỗi item_duration tick) và nguồn cung thật, cùng nguồn liquid đi
@@ -378,7 +512,7 @@ def _generator_power_rate(b: PlacedBuilding, in_edges, branch_count, output_rate
     best_flammability = 0.0
     best_rate = 0.0
     for src, cap in in_edges.get(b, []):
-        item = ITEMS.get(produced_item(src))
+        item = ITEMS.get(produced_item(grid, src))
         if item is None or item.flammability < b.type.min_flammability:
             continue
         rate = min(output_rate.get(id(src), 0.0) / branch_count[src], cap)
@@ -406,7 +540,7 @@ def _generator_power_rate(b: PlacedBuilding, in_edges, branch_count, output_rate
     return TICKS_PER_SECOND * b.type.power_production * best_flammability * (cycle_rate / max_cycle_rate)
 
 
-def _power_satisfaction(buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
+def _power_satisfaction(grid: Grid, buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
     """Xem PowerGraph.java getSatisfaction(): satisfaction = clamp(production/needed).
     Trả về (networks, satisfaction) -- networks: {id(building): network_id},
     satisfaction: {network_id: 0..1}. KHÔNG lặp lại (không giống game thật
@@ -421,7 +555,7 @@ def _power_satisfaction(buildings, in_edges, branch_count, output_rate, liquid_i
             continue
         if b.type.kind == "generator":
             production[net] += _generator_power_rate(
-                b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
+                grid, b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
             )
         if b.type.power_input > 0:
             consumption[net] += b.type.power_input
@@ -472,7 +606,12 @@ def evaluate_layout(grid: Grid):
         key = id(b)
         if key in liquid_output_rate:
             return liquid_output_rate[key]
-        rate = _pump_output_rate(grid, b) if b.type.kind == "pump" else 0.0
+        if b.type.kind == "pump":
+            rate = _pump_output_rate(grid, b)
+        elif b.type.kind == "solid-pump":
+            rate = _solid_pump_output_rate(grid, b)
+        else:
+            rate = 0.0
         liquid_output_rate[key] = rate
         return rate
 
@@ -487,6 +626,28 @@ def evaluate_layout(grid: Grid):
 
         if b.type.kind == "drill":
             rate = _drill_output_rate(grid, b)
+            # Drill.java consumeLiquid(...).boost() -- KHÔNG bắt buộc (khác
+            # power_input/consumePower ở dưới, xử lý riêng trong
+            # _power_satisfaction). Không có/thiếu boost_liquid vẫn ra đúng
+            # rate nền phía trên -- chỉ NHÂN THÊM nếu có nước, không bao giờ
+            # làm rate thấp hơn rate nền. Giới hạn: impact-drill/eruption-drill
+            # (BurstDrill) thật có 1 consumeLiquid(nước) BẮT BUỘC riêng
+            # (không có .boost(), không parse ở đây -- chỉ 2 consumeLiquid có
+            # .boost() mới được coi là booster) CHƯA model -- rate 2 block đó
+            # có thể bị TÍNH CAO HƠN thật nếu không cấp nước, xem NEXT_STEPS.md.
+            if b.type.boost_liquid is not None:
+                needed = TICKS_PER_SECOND * b.type.boost_amount
+                available = sum(
+                    min(compute_liquid(src) / liquid_branch_count[src], cap)
+                    for src, cap in liquid_in_edges[b]
+                    if produced_liquid(src) == b.type.boost_liquid
+                )
+                efficiency = min(available / needed, 1.0) if needed > 0 else 0.0
+                rate *= 1.0 + (b.type.boost_intensity - 1.0) * efficiency
+        elif b.type.kind == "beam-drill":
+            rate = _beam_drill_output_rate(grid, b)
+        elif b.type.kind == "wall-crafter":
+            rate = _wall_crafter_output_rate(grid, b)
         elif b.type.kind == "unloader":
             rate = _unloader_output_rate(grid, b)
         elif b.type.kind == "factory":
@@ -496,7 +657,7 @@ def evaluate_layout(grid: Grid):
                 available = sum(
                     min(compute(src, visiting) / branch_count[src], cap)
                     for src, cap in in_edges[b]
-                    if produced_item(src) == item_name
+                    if produced_item(grid, src) == item_name
                 )
                 cycle_rate = min(cycle_rate, available / amount_per_cycle)
             for liquid_name, amount_per_cycle in recipe.liquid_inputs.items():
@@ -531,7 +692,7 @@ def evaluate_layout(grid: Grid):
     # NEXT_STEPS.md, đủ dùng để phát hiện "building X sẽ chạy dưới công suất
     # vì thiếu điện" mà không cần mô phỏng lặp hội tụ đầy đủ.
     power_networks, power_sat_by_network = _power_satisfaction(
-        buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
+        grid, buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate
     )
     power_satisfaction: dict[int, float] = {}
     for b in buildings:
@@ -540,13 +701,13 @@ def evaluate_layout(grid: Grid):
         net = power_networks.get(id(b))
         sat = power_sat_by_network.get(net, 0.0) if net is not None else 0.0
         power_satisfaction[id(b)] = sat
-        if b.type.kind == "pump":
+        if b.type.kind in ("pump", "solid-pump"):
             liquid_output_rate[id(b)] *= sat
         else:
             output_rate[id(b)] *= sat
 
     power_production = {
-        b: _generator_power_rate(b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate)
+        b: _generator_power_rate(grid, b, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate)
         for b in buildings if b.type.kind == "generator"
     }
 

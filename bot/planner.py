@@ -15,13 +15,13 @@ is unchanged.
 from collections import deque
 
 from simulator.buildings import CATALOG, DIRECTIONS, ITEMS, LIQUIDS
-from simulator.grid import Grid
-from simulator.sim import evaluate_layout, produced_item, produced_liquid, trace_belt_path
+from simulator.grid import Grid, PlacedBuilding
+from simulator.sim import _power_linked, evaluate_layout, produced_item, produced_liquid, trace_belt_path
 
 
 def find_producer(grid: Grid, item_name: str):
     for b in grid.unique_buildings():
-        if produced_item(b) == item_name:
+        if produced_item(grid, b) == item_name:
             return b
     return None
 
@@ -196,6 +196,102 @@ def find_drill_spot(grid: Grid, ore_item: str, near, drill_type=None):
     return None
 
 
+def _touch_tiles_all_sides(building_type, x, y):
+    """4 cạnh x size vị trí sát footprint (x,y) -- dùng chung bởi
+    find_beam_drill_spot (BeamDrill quét CẢ 4 cạnh, xem sim.py
+    _beam_drill_scan) và tương tự phần WallCrafter bên dưới."""
+    s = building_type.size
+    return (
+        [(x + s, y + i) for i in range(s)] + [(x - 1, y + i) for i in range(s)]
+        + [(x + i, y + s) for i in range(s)] + [(x + i, y - 1) for i in range(s)]
+    )
+
+
+def find_beam_drill_spot(grid: Grid, ore_item: str, near, beam_drill_type):
+    """Như find_drill_spot, nhưng BeamDrill.java không đào theo diện tích
+    chân đế mà bắn tia từ MỖI cạnh (xem sim.py _beam_drill_scan) -- chỗ đặt
+    hợp lệ là bất kỳ vị trí nào có ore NGAY SÁT footprint (khoảng cách 1,
+    luôn trong tầm beam_range của mọi beam-drill hiện có trong catalog nên
+    không cần tính xa hơn -- xấp xỉ đơn giản hoá, chưa tận dụng hết tầm bắn
+    xa của tia, xem NEXT_STEPS.md)."""
+    nx, ny = near
+    max_radius = max(grid.width, grid.height)
+    for radius in range(max_radius):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue
+                x, y = nx + dx, ny + dy
+                if not grid.can_place(beam_drill_type, x, y):
+                    continue
+                touch = _touch_tiles_all_sides(beam_drill_type, x, y)
+                if any(grid.in_bounds(tx, ty) and grid.tiles[ty][tx].ore == ore_item for tx, ty in touch):
+                    return (x, y)
+    return None
+
+
+def find_unmined_attribute(grid: Grid, attribute_name: str, near=None, hint=None):
+    """Như find_unmined_ore, nhưng cho Tile.attribute (WallCrafter.java, xem
+    grid.py Tile.attribute + sim.py _wall_crafter_output_rate)."""
+    candidates = [
+        (x, y)
+        for y in range(grid.height)
+        for x in range(grid.width)
+        if grid.tiles[y][x].attribute == attribute_name and grid.building_at(x, y) is None
+    ]
+    return _select_tile(candidates, near, hint)
+
+
+def find_wall_crafter_spot(grid: Grid, attribute_name: str, near, wall_crafter_type):
+    """Khác find_beam_drill_spot: WallCrafter.java CHỈ quét cạnh ĐANG XOAY
+    MẶT TỚI (không phải cả 4 cạnh) -- phải tìm ĐÚNG rotation để cạnh đó chạm
+    attribute tile, trả về (x, y, rotation) thay vì chỉ (x, y)."""
+    nx, ny = near
+    max_radius = max(grid.width, grid.height)
+    s = wall_crafter_type.size
+    for radius in range(max_radius):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue
+                x, y = nx + dx, ny + dy
+                if not grid.can_place(wall_crafter_type, x, y):
+                    continue
+                for rotation, (ddx, ddy) in enumerate(DIRECTIONS):
+                    if ddx == 1:
+                        edge = [(x + s, y + i) for i in range(s)]
+                    elif ddx == -1:
+                        edge = [(x - 1, y + i) for i in range(s)]
+                    elif ddy == 1:
+                        edge = [(x + i, y + s) for i in range(s)]
+                    else:
+                        edge = [(x + i, y - 1) for i in range(s)]
+                    if any(grid.in_bounds(ex, ey) and grid.tiles[ey][ex].attribute == attribute_name for ex, ey in edge):
+                        return (x, y, rotation)
+    return None
+
+
+def find_solid_pump_spot(grid: Grid, attribute_name: str, near, solid_pump_type):
+    """Như find_drill_spot, nhưng SolidPump.java (vd water-extractor) đọc
+    Tile.attribute thay vì Tile.ore, và quét CẢ diện tích chân đế (khác
+    find_wall_crafter_spot chỉ quét 1 cạnh) -- xem sim.py
+    _solid_pump_output_rate."""
+    nx, ny = near
+    max_radius = max(grid.width, grid.height)
+    for radius in range(max_radius):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue
+                x, y = nx + dx, ny + dy
+                if not grid.can_place(solid_pump_type, x, y):
+                    continue
+                footprint = [(x + fx, y + fy) for fx in range(solid_pump_type.size) for fy in range(solid_pump_type.size)]
+                if any(grid.in_bounds(fx, fy) and grid.tiles[fy][fx].attribute == attribute_name for fx, fy in footprint):
+                    return (x, y)
+    return None
+
+
 def find_pump_spot(grid: Grid, liquid_name: str, near):
     """Like find_drill_spot, but for the default auto-placed pump type
     (mechanical-pump -- cheapest tier, same convention as always
@@ -296,16 +392,19 @@ def _route(grid: Grid, actions: list, start_tile, target_footprint, belt_type, e
     return path
 
 
-def _clear_belt_chain(grid: Grid, actions: list, start_tile):
+def _clear_belt_chain(grid: Grid, actions: list, start_tile, belt_kind: str = "belt"):
     """Xoá 1 chuỗi belt liên tiếp bắt đầu từ start_tile (nếu có) -- dùng khi
     cần giải phóng output_tile() của 1 nguồn ĐÃ có belt dẫn đi nơi khác, để
     đặt router/sorter mới ngay tại đó (xem plan_split/plan_filter_split,
     _route_or_branch_from_producer). Không làm gì nếu start_tile trống hoặc
-    là building khác không phải belt (an toàn, không xoá nhầm)."""
+    là building khác không phải belt (an toàn, không xoá nhầm).
+
+    belt_kind mặc định "belt" (conveyor, item) -- truyền "liquid-belt" khi
+    xoá chuỗi conduit thay vì conveyor."""
     x, y = start_tile
     while True:
         b = grid.building_at(x, y)
-        if b is None or b.type.kind != "belt":
+        if b is None or b.type.kind != belt_kind:
             break
         actions.append({"op": "remove", "x": x, "y": y})
         grid.remove(b)
@@ -328,7 +427,17 @@ def _route_or_branch_from_producer(grid: Grid, actions: list, producer, target_f
     Sửa: nếu output_tile() bị belt chiếm, TRACE xem belt đó dẫn tới đâu, xoá
     chuỗi belt cũ, rồi dùng plan_split() (router thật, xem
     simulator/sim.py:_trace_branching) để chia lại cho CẢ đích cũ lẫn đích
-    mới -- đúng cơ chế thật khi 1 nguồn cần nuôi >1 nơi."""
+    mới -- đúng cơ chế thật khi 1 nguồn cần nuôi >1 nơi.
+
+    Bug thật phát hiện khi thêm liquid boost cho drill (_try_boost_with_water):
+    trước đây hàm này LUÔN gọi trace_belt_path()/plan_split() KHÔNG truyền
+    belt_kind, mặc định "belt" (conveyor) -- dùng cho liquid (belt_type=
+    CATALOG["conduit"], kind="liquid-belt") sẽ trace SAI, dừng ngay ô conduit
+    đầu tiên (coi nhầm nó là "đích"). Giờ suy ra belt_kind/router_type đúng
+    từ chính belt_type truyền vào."""
+    belt_kind = belt_type.kind
+    router_type = CATALOG["liquid-router"] if belt_kind == "liquid-belt" else CATALOG["router"]
+
     out_tile = producer.output_tile()
     if grid.building_at(*out_tile) is None:
         _route(grid, actions, out_tile, target_footprint, belt_type, error_context)
@@ -337,7 +446,7 @@ def _route_or_branch_from_producer(grid: Grid, actions: list, producer, target_f
     if list(target_footprint) and out_tile in set(target_footprint):
         return  # output_tile của producer chạm thẳng target rồi, không cần gì thêm
 
-    existing = trace_belt_path(grid, *out_tile)
+    existing = trace_belt_path(grid, *out_tile, belt_kind=belt_kind)
     if existing is None or existing[0] is None:
         raise RuntimeError(error_context)
     existing_dest = existing[0]
@@ -347,10 +456,11 @@ def _route_or_branch_from_producer(grid: Grid, actions: list, producer, target_f
     # plan_split() tự giải phóng output_tile() (xem _clear_belt_chain bên
     # trong đó) nên không cần xoá belt cũ ở đây -- chỉ cần gọi với CẢ đích cũ
     # (existing_dest, giữ nguyên kết nối trước đó) lẫn đích mới.
-    actions.extend(plan_split(grid, producer, [existing_dest.footprint(), list(target_footprint)]))
+    actions.extend(plan_split(grid, producer, [existing_dest.footprint(), list(target_footprint)],
+                               belt_type=belt_type, router_type=router_type))
 
 
-def plan_split(grid: Grid, source, destinations: list) -> list:
+def plan_split(grid: Grid, source, destinations: list, belt_type=None, router_type=None) -> list:
     """Chia đầu ra của 1 nguồn (drill/factory đã đặt) thành nhiều nhánh,
     dùng router thật (xem simulator/sim.py:_trace_branching -- chia đều
     capacity cho N nhánh, khớp cơ chế round-robin thật của Router.java).
@@ -364,9 +474,18 @@ def plan_split(grid: Grid, source, destinations: list) -> list:
     cấp cao (action='split', chỉ cần tên building/"core", tự resolve/tự đặt
     mới nếu cần) -- đó là hàm được bot/llm_parser.py + bot/live_run.py gọi
     qua plan() dispatcher.
-    """
+
+    belt_type/router_type: mặc định None -> conveyor/router (item, hành vi
+    cũ giữ nguyên cho mọi call site có sẵn). Truyền CATALOG["conduit"]/
+    CATALOG["liquid-router"] để chia nhánh LIQUID thay vì item (xem
+    _route_or_branch_from_producer -- _trace_branching không phân biệt
+    router/liquid-router khi chạy, cả 2 đều kind="router", chỉ khác tên
+    hiển thị đúng loại building thật)."""
+    belt_type = belt_type if belt_type is not None else CATALOG["conveyor"]
+    router_type = router_type if router_type is not None else CATALOG["router"]
+    belt_kind = belt_type.kind
+
     actions = []
-    router_type = CATALOG["router"]
     out_tile = source.output_tile()
     # source có thể ĐÃ có belt dẫn đi nơi khác rồi (vd tự nối về core từ 1
     # lệnh build trước đó) -- giải phóng output_tile trước khi đặt router,
@@ -374,18 +493,17 @@ def plan_split(grid: Grid, source, destinations: list) -> list:
     # sát router_spot) mà KHÔNG kiểm tra chỗ đó có bị chiếm hay không, dẫn
     # tới coi như đã nối xong trong khi belt cũ vẫn trỏ hướng khác (bug thật
     # gặp khi split 1 nguồn đã tồn tại, xem NEXT_STEPS.md).
-    _clear_belt_chain(grid, actions, out_tile)
+    _clear_belt_chain(grid, actions, out_tile, belt_kind=belt_kind)
 
     router_spot = find_free_area(grid, router_type, near=out_tile)
     if router_spot is None:
         raise RuntimeError(f"không tìm được chỗ đặt router gần '{source.type.name}'")
     rx, ry = router_spot
 
-    conveyor_type = CATALOG["conveyor"]
-    _route(grid, actions, out_tile, [(rx, ry)], conveyor_type,
+    _route(grid, actions, out_tile, [(rx, ry)], belt_type,
            f"không nối được '{source.type.name}' tới router")
     grid.place(router_type, rx, ry, rotation=0)
-    actions.append({"op": "place", "building": "router", "x": rx, "y": ry, "rotation": 0})
+    actions.append({"op": "place", "building": router_type.name, "x": rx, "y": ry, "rotation": 0})
 
     neighbor_tiles = [(rx + dx, ry + dy) for dx, dy in DIRECTIONS]
     used = set()
@@ -408,8 +526,8 @@ def plan_split(grid: Grid, source, destinations: list) -> list:
             if path is None:
                 continue
             for bx, by, rotation in path:
-                grid.place(conveyor_type, bx, by, rotation=rotation)
-                actions.append({"op": "place", "building": "conveyor", "x": bx, "y": by, "rotation": rotation})
+                grid.place(belt_type, bx, by, rotation=rotation)
+                actions.append({"op": "place", "building": belt_type.name, "x": bx, "y": by, "rotation": rotation})
             used.add((nx, ny))
             placed = True
             break
@@ -573,7 +691,7 @@ def plan_split_command(grid: Grid, command: dict, scorer=None, preferences: dict
     đích nếu cần, xem _resolve_split_destination."""
     source_spec = command.get("source") or {}
     source = resolve_target(grid, source_spec.get("building"), source_spec.get("hint"))
-    item_name = produced_item(source)
+    item_name = produced_item(grid, source)
     if item_name is None:
         raise RuntimeError(f"'{source.type.name}' không sản xuất item nào để chia nhánh (chỉ drill/factory mới có)")
 
@@ -604,7 +722,7 @@ def plan_filter_split_command(grid: Grid, command: dict, scorer=None, preference
     filter_item_name = command.get("filter_item")
     if filter_item_name is None:
         raise ValueError("lệnh filter_split cần 'filter_item' (item nào đi thẳng)")
-    item_name = produced_item(source)
+    item_name = produced_item(grid, source)
 
     actions = []
     near = source.output_tile()
@@ -648,18 +766,52 @@ def _connect_to_core(grid: Grid, actions: list, source, error_prefix: str):
            f"{error_prefix} nhưng không tìm được đường belt nối tới core")
 
 
+def _find_power_bridge_spot(grid: Grid, near, preferences: dict = None):
+    """Tìm chỗ đặt power-node GẦN `near` mà khi đặt xong sẽ _power_linked
+    (xem simulator/sim.py) tới ít nhất 1 building có điện ĐÃ CÓ SẴN trên map
+    (generator hoặc power-node khác) -- ưu tiên NỐI VÀO mạng lưới điện có
+    sẵn gần nhất, thay vì luôn tự xây generator mới dù đã có lưới điện gần
+    đó (trước đây _ensure_powered() luôn xây mới bất kể, tốn kém và không
+    giống cách người chơi thật hay làm -- xem NEXT_STEPS.md). Trả về (x,y)
+    hoặc None nếu map chưa có building điện nào, hoặc không tìm được chỗ
+    trong tầm bất kỳ cái nào."""
+    node_type = CATALOG["power-node"]
+    existing = [b for b in grid.unique_buildings() if b.type.kind in ("generator", "power-node")]
+    if not existing:
+        return None
+    candidates = find_free_area_candidates(grid, node_type, near=near, limit=50, preferences=preferences)
+    for x, y in candidates:
+        # PlacedBuilding tạm (không grid.place() thật) chỉ để dùng
+        # _power_linked() kiểm tầm -- tránh side-effect nếu candidate không
+        # được chọn.
+        probe = PlacedBuilding(node_type, x, y, rotation=0)
+        if any(_power_linked(probe, other) for other in existing):
+            return (x, y)
+    return None
+
+
 def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, preferences: dict = None):
     """Nếu `building` cần điện (power_input > 0, xem Blocks.java
     consumePower() -- laser-drill/blast-drill/silicon-smelter/multi-press...
     hầu hết factory thật đều cần) nhưng mạng điện hiện tại chưa đủ công suất
-    (kiểm tra bằng evaluate_layout() thật, không đoán), tự đặt 1
-    combustion-generator (đốt than -- flammability=1.0, cao nhất, lựa chọn
-    mặc định rẻ nhất, giống cách bot luôn mặc định mechanical-drill/
-    mechanical-pump cho input thường), tự nối than cho nó, và đặt 1
-    power-node cạnh building để bắc cầu vào tầm (laserRange=6 ô) -- KHÔNG tự
-    suy luận loại generator/lượng cần chính xác cho lưới điện phức tạp
-    nhiều building, chỉ đủ cấp cho 1 building đơn lẻ vừa xây. Xem
-    NEXT_STEPS.md mục mạng điện cho giới hạn đầy đủ."""
+    (kiểm tra bằng evaluate_layout() thật, không đoán):
+
+    1. TRƯỚC TIÊN thử nối vào mạng lưới điện GẦN NHẤT đã có sẵn (chỉ đặt 1
+       power-node bắc cầu, xem _find_power_bridge_spot) -- rẻ hơn, giống
+       cách người chơi thật hay làm hơn là luôn xây generator riêng cho
+       từng building.
+    2. Đo lại satisfaction SAU KHI bắc cầu -- nếu mạng đó đủ công suất rồi
+       thì dừng ở đây, không xây gì thêm.
+    3. Chỉ khi (1) không tìm được chỗ bắc cầu (map chưa có điện gần đó), HAY
+       (2) bắc cầu xong vẫn thiếu công suất, mới tự đặt 1 combustion-
+       generator MỚI (đốt than -- flammability=1.0, cao nhất, lựa chọn mặc
+       định rẻ nhất) + tự nối than cho nó -- generator mới này CŨNG nằm
+       trong tầm power-node vừa bắc cầu (nếu có) nên nối chung vào 1 mạng,
+       không tách riêng.
+
+    KHÔNG tự suy luận công suất cần chính xác cho lưới điện phức tạp nhiều
+    building, chỉ đủ cấp cho 1 building đơn lẻ vừa xây. Xem NEXT_STEPS.md
+    mục mạng điện cho giới hạn đầy đủ."""
     if building.type.power_input <= 0:
         return
 
@@ -667,8 +819,25 @@ def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, pref
     if result["power_satisfaction"].get(building, 0.0) >= 1.0 - 1e-6:
         return
 
+    bridged = False
+    bridge_spot = _find_power_bridge_spot(grid, near=(building.x, building.y), preferences=preferences)
+    if bridge_spot is not None:
+        bx, by = bridge_spot
+        grid.place(CATALOG["power-node"], bx, by, rotation=0)
+        actions.append({"op": "place", "building": "power-node", "x": bx, "y": by, "rotation": 0})
+        bridged = True
+
+        result = evaluate_layout(grid)
+        if result["power_satisfaction"].get(building, 0.0) >= 1.0 - 1e-6:
+            return  # mạng lưới có sẵn đã đủ công suất, không cần xây generator mới
+
     generator_type = CATALOG["combustion-generator"]
-    gen_spot = find_free_area(grid, generator_type, near=near, preferences=preferences)
+    # Nếu đã bắc cầu ở bước trên nhưng chưa đủ công suất, tìm chỗ đặt
+    # generator mới GẦN CHÍNH power-node vừa bắc cầu (không phải near gốc)
+    # -- generator có khả năng cao chạm thẳng/trong tầm power-node đó, nối
+    # chung vào CÙNG 1 mạng thay vì tách riêng.
+    gen_near = bridge_spot if bridged else near
+    gen_spot = find_free_area(grid, generator_type, near=gen_near, preferences=preferences)
     if gen_spot is None:
         raise RuntimeError(f"'{building.type.name}' cần điện nhưng không tìm được chỗ đặt combustion-generator")
     gx, gy = gen_spot
@@ -699,12 +868,85 @@ def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, pref
     _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
            f"'{building.type.name}' cần điện nhưng không nối được than tới combustion-generator")
 
-    node_type = CATALOG["power-node"]
-    node_spot = find_free_area(grid, node_type, near=(building.x, building.y), preferences=preferences)
-    if node_spot is not None:
-        nx, ny = node_spot
-        grid.place(node_type, nx, ny, rotation=0)
-        actions.append({"op": "place", "building": "power-node", "x": nx, "y": ny, "rotation": 0})
+    if not bridged:
+        # Chưa bắc cầu ở bước trên (map chưa có điện gần đó từ đầu) -- đặt 1
+        # power-node cạnh building để bắc cầu tới generator MỚI vừa xây. Đã
+        # bắc cầu rồi thì bỏ qua bước này (tránh đặt trùng 2 power-node gần
+        # building -- generator mới đặt gần bridge_spot ở trên nên nhiều
+        # khả năng đã chạm/trong tầm power-node đó rồi).
+        node_type = CATALOG["power-node"]
+        node_spot = find_free_area(grid, node_type, near=(building.x, building.y), preferences=preferences)
+        if node_spot is not None:
+            nx, ny = node_spot
+            grid.place(node_type, nx, ny, rotation=0)
+            actions.append({"op": "place", "building": "power-node", "x": nx, "y": ny, "rotation": 0})
+
+
+def _try_boost_with_water(grid: Grid, actions: list, drill, preferences: dict = None):
+    """Drill.java consumeLiquid(...).boost() -- KHÔNG BẮT BUỘC (khác
+    power_input/_ensure_powered): không tìm được/không nối được nước thì bỏ
+    qua ÊM, drill vẫn chạy đúng tốc độ nền (_drill_output_rate), KHÔNG raise
+    lỗi nào -- khác hẳn _ensure_powered (bắt buộc, raise nếu không xây được).
+
+    Thứ tự ưu tiên nguồn nước (đúng ý người dùng: "nguồn nước từ drill water
+    HOẶC từ 1 đường ống"):
+    1. Producer đã có SẴN trên map (water-extractor/mechanical-pump khác) --
+       dùng _route_or_branch_from_producer() nên NHIỀU drill gọi hàm này lần
+       lượt (vd lệnh "phủ kín mỏ") sẽ tự động NỐI CHUNG vào cùng 1 nguồn qua
+       router, không mỗi drill tự xây 1 nguồn riêng -- đây là phần "tối ưu"
+       được yêu cầu.
+    2. Tile liquid THẬT chưa khai thác gần drill -- xây mechanical-pump mới.
+    3. Không có tile liquid thật -- thử water-extractor (SolidPump, đọc
+       Tile.attribute) nếu catalog có loại solid-pump nào sinh đúng liquid
+       này (hiện chỉ water-extractor -> "water").
+    4. Không có gì cả -- bỏ qua, drill vẫn hoạt động ở tốc độ nền."""
+    liquid_name = drill.type.boost_liquid
+    if liquid_name is None:
+        return
+
+    footprint = drill.footprint()
+    near = (drill.x, drill.y)
+
+    producer = find_liquid_producer(grid, liquid_name)
+    if producer is not None:
+        try:
+            _route_or_branch_from_producer(grid, actions, producer, footprint, CATALOG["conduit"], "boost nước (bỏ qua)")
+        except RuntimeError:
+            pass
+        return
+
+    liquid_pos = find_untapped_liquid(grid, liquid_name, near=near)
+    if liquid_pos is not None:
+        spot = find_pump_spot(grid, liquid_name, near=liquid_pos)
+        if spot is not None:
+            px, py = spot
+            new_pump = grid.place(CATALOG["mechanical-pump"], px, py, rotation=0, liquid_target=liquid_name)
+            actions.append({"op": "place", "building": "mechanical-pump", "x": px, "y": py, "rotation": 0, "liquid_target": liquid_name})
+            try:
+                _route(grid, actions, new_pump.output_tile(), footprint, CATALOG["conduit"], "boost nước (bỏ qua)")
+            except RuntimeError:
+                pass
+            return
+
+    solid_pump_type = next(
+        (bt for bt in CATALOG.values() if bt.kind == "solid-pump" and bt.solid_pump_liquid == liquid_name), None
+    )
+    if solid_pump_type is None:
+        return
+    attr_pos = find_unmined_attribute(grid, solid_pump_type.solid_pump_attribute, near=near)
+    if attr_pos is None:
+        return
+    spot = find_solid_pump_spot(grid, solid_pump_type.solid_pump_attribute, near=attr_pos, solid_pump_type=solid_pump_type)
+    if spot is None:
+        return
+    px, py = spot
+    new_pump = grid.place(solid_pump_type, px, py, rotation=0)
+    actions.append({"op": "place", "building": solid_pump_type.name, "x": px, "y": py, "rotation": 0})
+    try:
+        _ensure_powered(grid, actions, new_pump, near=(px, py), preferences=preferences)
+        _route(grid, actions, new_pump.output_tile(), footprint, CATALOG["conduit"], "boost nước (bỏ qua)")
+    except RuntimeError:
+        pass
 
 
 def _find_or_build_factory_sources(grid: Grid, actions: list, recipe, core_pos, scorer=None, exclude_item=None, exclude_liquid=None):
@@ -772,9 +1014,74 @@ def _find_or_build_factory_sources(grid: Grid, actions: list, recipe, core_pos, 
     return sources, liquid_sources
 
 
+def plan_fill_ore(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
+    """"Phủ kín mỏ": 1 lệnh build thường (plan_build nhánh "drill") chỉ đặt
+    ĐÚNG 1 drill dù mỏ to cỡ nào (find_drill_spot trả về ngay ô hợp lệ ĐẦU
+    TIÊN, xem docstring hàm đó) -- lệnh này lặp lại đúng quy trình đó cho
+    tới khi find_drill_spot() không còn chỗ nào (mỏ đã bị các drill trước
+    đó chiếm hết, grid.building_at() loại trừ dần từng ô mỗi vòng lặp -- số
+    ứng viên "chưa khai thác" giảm chặt mỗi vòng nên chắc chắn dừng, không
+    cần giới hạn số vòng lặp thủ công).
+
+    Nhiều drill cần boost nước (_try_boost_with_water) sẽ tự động DÙNG
+    CHUNG 1 nguồn nước duy nhất thay vì mỗi drill 1 nguồn riêng -- không cần
+    code "tối ưu" riêng, vì _try_boost_with_water() LUÔN ưu tiên tái sử dụng
+    producer đã có trên map (qua _route_or_branch_from_producer, dùng router
+    chia nhánh) trước khi cân nhắc xây nguồn mới; nguồn nước drill ĐẦU TIÊN
+    tự xây sẽ được các drill SAU đó tìm thấy qua find_liquid_producer() và
+    tái sử dụng."""
+    building_name = command["building"]
+    ore_target = command.get("ore_target")
+    if ore_target is None:
+        raise ValueError("fill command needs an ore_target (e.g. 'phủ kín mỏ than')")
+    item = ITEMS.get(ore_target)
+    if item is None:
+        raise ValueError(f"'{ore_target}' không phải tên item hợp lệ")
+
+    if building_name == "drill":
+        building_type = select_drill_type(item.hardness, scorer=scorer)
+        if building_type is None:
+            raise RuntimeError(f"không có loại drill nào đủ mạnh để khai thác '{ore_target}' (hardness={item.hardness})")
+    else:
+        building_type = CATALOG[building_name]
+        if building_type.tier < item.hardness:
+            raise RuntimeError(
+                f"'{building_name}' (tier {building_type.tier}) không đủ mạnh để khai thác "
+                f"'{ore_target}' (cần tier >= {item.hardness}) -- chọn drill tier cao hơn"
+            )
+
+    core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
+    core_pos = (core.x, core.y) if core is not None else None
+
+    actions = []
+    placed = 0
+    while True:
+        ore_pos = find_unmined_ore(grid, ore_target, near=core_pos, hint=command.get("ore_location_hint"))
+        if ore_pos is None:
+            break
+        spot = find_drill_spot(grid, ore_target, near=ore_pos, drill_type=building_type)
+        if spot is None:
+            break
+        x, y = spot
+        actions.append({"op": "place", "building": building_type.name, "x": x, "y": y, "rotation": 0, "ore_target": ore_target})
+        new_drill = grid.place(building_type, x, y, rotation=0, ore_target=ore_target)
+        _ensure_powered(grid, actions, new_drill, near=(x, y), scorer=scorer, preferences=preferences)
+        _try_boost_with_water(grid, actions, new_drill, preferences=preferences)
+        _connect_to_core(grid, actions, new_drill, f"đã đặt drill '{ore_target}' (phủ kín mỏ, #{placed + 1})")
+        placed += 1
+
+    if placed == 0:
+        raise RuntimeError(f"không tìm thấy mỏ '{ore_target}' chưa khai thác trên map (hoặc không có chỗ đặt)")
+
+    return actions
+
+
 def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
     if command.get("action") != "build":
         raise ValueError(f"unsupported command: {command}")
+
+    if command.get("fill"):
+        return plan_fill_ore(grid, command, scorer=scorer, preferences=preferences)
 
     building_name = command["building"]
 
@@ -834,7 +1141,90 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
         x, y = spot
         actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": 0, "ore_target": ore_target})
         new_drill = grid.place(building_type, x, y, rotation=0, ore_target=ore_target)
+        _ensure_powered(grid, actions, new_drill, near=(x, y), scorer=scorer, preferences=preferences)
+        _try_boost_with_water(grid, actions, new_drill, preferences=preferences)
         _connect_to_core(grid, actions, new_drill, f"đã đặt drill '{ore_target}'")
+        return actions
+
+    if building_type.kind == "beam-drill":
+        # BeamDrill (plasma-bore/large-plasma-bore) tự nhận diện item lúc
+        # đánh giá (xem sim.py _beam_drill_target), KHÔNG gán ore_target lên
+        # PlacedBuilding như drill thường -- ore_target ở đây chỉ dùng để
+        # TÌM chỗ đặt (cần đứng sát đúng loại ore người dùng yêu cầu).
+        ore_target = command.get("ore_target")
+        if ore_target is None:
+            raise ValueError("beam-drill command needs an ore_target (e.g. 'khoan plasma đồng')")
+        item = ITEMS.get(ore_target)
+        if item is not None and building_type.tier < item.hardness:
+            raise RuntimeError(
+                f"'{building_name}' (tier {building_type.tier}) không đủ mạnh để khai thác "
+                f"'{ore_target}' (cần tier >= {item.hardness}) -- chọn beam-drill tier cao hơn"
+            )
+        ore_pos = find_unmined_ore(grid, ore_target, near=core_pos, hint=command.get("ore_location_hint"))
+        if ore_pos is None:
+            raise RuntimeError(f"không tìm thấy mỏ '{ore_target}' chưa khai thác trên map (hoặc không có mỏ nào khớp vị trí bạn chỉ định)")
+        spot = find_beam_drill_spot(grid, ore_target, near=ore_pos, beam_drill_type=building_type)
+        if spot is None:
+            raise RuntimeError(f"không tìm được chỗ trống sát mỏ '{ore_target}' để đặt '{building_name}'")
+        x, y = spot
+        actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": 0})
+        new_beam_drill = grid.place(building_type, x, y, rotation=0)
+        _ensure_powered(grid, actions, new_beam_drill, near=(x, y), scorer=scorer, preferences=preferences)
+        _connect_to_core(grid, actions, new_beam_drill, f"đã đặt '{building_name}' khai thác '{ore_target}'")
+        return actions
+
+    if building_type.kind == "wall-crafter":
+        # WallCrafter (cliff-crusher/large-cliff-crusher) luôn ra 1 item cố
+        # định (wall_output, gắn liền wall_attribute) -- không cần người
+        # dùng chỉ định ore_target như drill/beam-drill.
+        if building_type.wall_attribute is None:
+            raise RuntimeError(f"'{building_name}' thiếu wall_attribute (lỗi catalog, báo lại)")
+        near = core_pos if core_pos is not None else (0, 0)
+        attr_pos = find_unmined_attribute(grid, building_type.wall_attribute, near=near)
+        if attr_pos is None:
+            raise RuntimeError(
+                f"không tìm thấy đá/tường mang attribute '{building_type.wall_attribute}' "
+                f"trên map cho '{building_name}'"
+            )
+        spot = find_wall_crafter_spot(grid, building_type.wall_attribute, near=attr_pos, wall_crafter_type=building_type)
+        if spot is None:
+            raise RuntimeError(
+                f"không tìm được chỗ trống sát attribute '{building_type.wall_attribute}' để đặt '{building_name}'"
+            )
+        x, y, rotation = spot
+        actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": rotation})
+        new_crafter = grid.place(building_type, x, y, rotation=rotation)
+        _ensure_powered(grid, actions, new_crafter, near=(x, y), scorer=scorer, preferences=preferences)
+        _connect_to_core(grid, actions, new_crafter, f"đã đặt '{building_name}'")
+        return actions
+
+    if building_type.kind == "solid-pump":
+        # SolidPump (water-extractor) luôn ra 1 liquid CỐ ĐỊNH
+        # (solid_pump_liquid, gắn liền solid_pump_attribute) -- không cần
+        # người dùng chỉ định liquid_target như pump thường, giống cách
+        # wall-crafter không cần ore_target.
+        if building_type.solid_pump_attribute is None:
+            raise RuntimeError(f"'{building_name}' thiếu solid_pump_attribute (lỗi catalog, báo lại)")
+        near = core_pos if core_pos is not None else (0, 0)
+        attr_pos = find_unmined_attribute(grid, building_type.solid_pump_attribute, near=near)
+        if attr_pos is None:
+            raise RuntimeError(
+                f"không tìm thấy nền đất mang attribute '{building_type.solid_pump_attribute}' "
+                f"trên map cho '{building_name}'"
+            )
+        spot = find_solid_pump_spot(grid, building_type.solid_pump_attribute, near=attr_pos, solid_pump_type=building_type)
+        if spot is None:
+            raise RuntimeError(
+                f"không tìm được chỗ trống sát attribute '{building_type.solid_pump_attribute}' để đặt '{building_name}'"
+            )
+        x, y = spot
+        actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": 0})
+        # KHÔNG gọi _connect_to_core -- liquid không "giao thẳng về core"
+        # như item, giống hệt cách pump thường (kind="pump" bên dưới) cũng
+        # chỉ đặt xuống, để lại việc nối tới nơi cần liquid (factory) cho
+        # lệnh build tiếp theo tự tìm producer qua find_liquid_producer.
+        new_solid_pump = grid.place(building_type, x, y, rotation=0)
+        _ensure_powered(grid, actions, new_solid_pump, near=(x, y), scorer=scorer, preferences=preferences)
         return actions
 
     if building_type.kind == "pump":
@@ -849,7 +1239,12 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
             raise RuntimeError(f"không tìm được chỗ trống để đặt pump bơm '{liquid_target}'")
         x, y = spot
         actions.append({"op": "place", "building": building_name, "x": x, "y": y, "rotation": 0, "liquid_target": liquid_target})
-        grid.place(building_type, x, y, rotation=0, liquid_target=liquid_target)
+        new_pump = grid.place(building_type, x, y, rotation=0, liquid_target=liquid_target)
+        # mechanical-pump (loại duy nhất chat command hiện đặt được) có
+        # power_input=0 nên đây là no-op trong thực tế -- thêm để nhất
+        # quán và không sai nếu sau này có tier pump khác cần điện thật
+        # (vd impulse-pump/rotary-pump, xem generated_catalog.py).
+        _ensure_powered(grid, actions, new_pump, near=(x, y), scorer=scorer, preferences=preferences)
         return actions
 
     if building_type.kind == "generator":
