@@ -196,6 +196,20 @@ TIER_RE = re.compile(r"(?:cấp|tier)\s*(\d+)")
 # nào. Chỉ áp dụng cho drill (có ore_target) -- xem docstring plan_fill_ore.
 FILL_PHRASES = ("phủ kín mỏ", "phủ kín", "phủ hết mỏ", "phủ hết", "hết mỏ", "toàn bộ mỏ", "cả mỏ")
 
+# User: "Giờ ví dụ tôi gọ, Khai thác đồng và chì, cả 2 sẽ có 2 bẳng chuyền
+# nối lại với nhau, và cuối cùng 1 băng chuyển về thôi" -- người dùng nói
+# RÕ muốn nhập chung 2 nguồn vào 1 đường belt, thay vì để bot tự quyết theo
+# rate an toàn (xem bot/planner.py:_try_merge_or_connect_to_core -- 2 điều
+# kiện trigger merge là OR: force=True (phrase này) HOẶC rate an toàn).
+# KHÔNG dùng "nối lại" (dù rất tự nhiên theo câu người dùng) -- trùng
+# ACTION_PHRASES["nối lại"]="reroute" (xem parse_command trên), sẽ khiến cả
+# câu bị hiểu nhầm thành lệnh reroute thay vì build+merge.
+MERGE_PHRASES = (
+    "nối chung", "gộp chung", "nhập chung",
+    "dùng chung băng chuyền", "gộp băng chuyền", "nhập vào 1 băng chuyền",
+    "chung 1 băng chuyền", "về chung 1 đường", "gộp lại thành 1",
+)
+
 # ConsumeGenerator.java thật (combustion-generator/steam-generator) -- user
 # hỏi "xây 21 máy phát điện siêu nhỏ" thì bot có tự cấp than + dùng chung 1
 # nguồn qua router không (xem NEXT_STEPS.md mục "cụm generator") -- cần bắt
@@ -328,6 +342,8 @@ def parse_command(text: str) -> dict:
         command["ore_location_hint"] = _find_location_hint(normalized)
         if any(phrase in normalized for phrase in FILL_PHRASES):
             command["fill"] = True
+        if any(phrase in normalized for phrase in MERGE_PHRASES):
+            command["merge"] = True
 
     if action == "build" and building == "mechanical-pump":
         liquid = _find_liquid(normalized)

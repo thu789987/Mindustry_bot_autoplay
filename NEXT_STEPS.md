@@ -1,5 +1,93 @@
 # Việc cần làm tiếp — đọc file này khi quay lại
 
+## Nhập chung (merge) belt của 2 nguồn khác loại ore vào core
+
+User: "Giờ ví dụ tôi gọ, Khai thác đồng và chì, cả 2 sẽ có 2 bẳng chuyền nối
+lại với nhau, và cuối cùng 1 băng chuyển về thôi" -- verify thật bằng test
+TRƯỚC khi sửa: 2 lệnh "khai thác" liên tiếp (khác ore) trước đây LUÔN ra 2
+đường belt BFS ĐỘC LẬP, không bao giờ chạm nhau, dù về cùng 1 core.
+
+Chính sách merge do user chỉ rõ (2 điều kiện OR, không phải AND): "chỉ nên
+nhập khi được yêu cầu hoặc số lượng item trên bằng chuyền không bị quá
+nhiều".
+
+### Đã làm
+
+- `bot/planner.py:_try_merge_or_connect_to_core(grid, actions, source,
+  error_prefix, force=False)` -- thay thế lời gọi `_connect_to_core` cũ ở
+  nhánh "drill" của `plan_build()`. Logic:
+  1. Gom `existing_belts` = mọi building `kind=="belt"` trên map.
+  2. BFS (`find_belt_path`) từ output_tile() của drill mới tới bất kỳ ô
+     belt có sẵn nào.
+  3. Xác định (các) producer khác THỰC SỰ dùng đúng đoạn belt sắp merge vào
+     -- `_source_feeds_tile()` (mới) đi theo chuỗi rotation từng ô belt từ
+     nguồn đó, KHÔNG cộng dồn rate của MỌI producer trên map (quá bảo thủ,
+     chặn nhầm merge an toàn ở map có nhiều nhánh không liên quan). Gặp
+     router/junction/sorter/overflow-gate/bridge/mass-driver (rẽ nhánh) ->
+     coi như CÓ THỂ chạm (an toàn hơn: thà tính dư còn hơn bỏ sót).
+  4. An toàn = (rate riêng drill mới + rate các nguồn đang dùng đoạn đó) <=
+     `CATALOG["conveyor"].base_rate` (6.5 item/s thật, Conveyor.java).
+  5. `force or safe` -> đặt belt theo đường merge vừa tìm. Ngược lại -> rơi
+     về `_connect_to_core` cũ (đường riêng tới core).
+- `bot/command_parser.py:MERGE_PHRASES` -- phrase rõ ràng ("nối chung", "gộp
+  chung", "nhập chung", ...) bật `command["merge"]=True` cho lệnh build
+  drill. **KHÔNG dùng "nối lại"** (dù rất tự nhiên theo câu user) -- trùng
+  `ACTION_PHRASES["nối lại"]="reroute"`, sẽ khiến cả câu bị hiểu nhầm thành
+  lệnh reroute. `command_parser.py` hiện CHƯA lan truyền cờ `merge` qua các
+  segment tách bởi `parse_commands()` (vd "khai thác đồng và chì, nối chung
+  lại" bị tách segment, "nối chung lại" đứng riêng không khớp
+  action/building nào nên bị bỏ qua) -- chỉ hoạt động khi merge-phrase nằm
+  CHUNG mệnh đề với build command (vd "khai thác chì nối chung").
+
+### Bug thật phát hiện + sửa khi làm tính năng này (verify TRƯỚC khi merge)
+
+`find_belt_path()` coi "output_tile() của nguồn CHẠM (kề cạnh, không đè lên)
+1 ô trong target_footprint" là KHÔNG CẦN đặt belt gì thêm (`return []`).
+Điều này ĐÚNG cho target là core/generator/factory (building nhiều ô, tự
+"hút" item từ MỌI ô kề chân đế -- cơ chế "touching placement" đã dùng nhiều
+lần trong dự án, xem mục water-extractor bên dưới) nhưng SAI khi tái dùng
+y nguyên cho target là 1 ô belt: 1 conveyor THƯỜNG chỉ nhận item đặt THẲNG
+lên chính nó, không "vói" sang ô trống bên cạnh để tự hút. Hậu quả thật bắt
+được qua test (`evaluate_layout`): drill thứ 2 "tưởng đã merge" (0 conveyor
+mới) nhưng thực ra output rơi vào ô trống -- core chỉ tăng đúng bằng rate
+nguồn ĐẦU, nguồn SAU biến mất hoàn toàn khỏi `find_connections()` dù rate
+tính riêng > 0 (kẹt cứng âm thầm, không báo lỗi gì).
+
+Sửa trong `_try_merge_or_connect_to_core`: nếu `find_belt_path()` trả `[]`
+cho target là existing belt, TỰ đặt THẬT 1 ô conveyor tại output_tile của
+drill, quay mặt về phía ô belt có sẵn (chỉ khi output_tile còn trống và
+`can_place` hợp lệ -- nếu không, huỷ merge, rơi về `_connect_to_core`).
+
+### Test (`bot/belt_merge_demo.py`)
+
+1. "khai thác đồng" rồi "khai thác chì" (rate thấp, an toàn) -> chì tự merge
+   vào belt đồng (chỉ 1 conveyor mới, không phải đi riêng ~20 ô tới core),
+   core nhận ĐỦ tổng rate 2 nguồn (đối chiếu công thức tay).
+2. Hạ tạm `CATALOG["conveyor"].base_rate` xuống 0.1 (mô phỏng "rate cộng dồn
+   vượt ngưỡng an toàn" mà KHÔNG cần dựng lưới điện thật cho drill tier cao
+   -- eruption-drill cần 360 điện, không liên quan gì tới điều đang test:
+   NGƯỠNG SO SÁNH, không phải cơ chế điện) -> drill thứ 2 tự đi đường RIÊNG
+   chạm thẳng core (không merge).
+3. Lệnh "khai thác chì nối chung" (cùng bản đồ rate cao ở kịch bản 2) ->
+   `command["merge"]=True`, ép merge dù rate vượt ngưỡng -- đường đặt NGẮN
+   HƠN HẲN đường riêng (8 ô so với 15 ô), chạm belt có sẵn thay vì core.
+
+### Giới hạn đã biết
+
+- Chỉ áp dụng cho nhánh "drill" của `plan_build()` -- `plan_fill_ore()` (đã
+  có manifold riêng, xem mục "Redesign plan_fill_ore") và các nhánh
+  beam-drill/wall-crafter/factory khác CHƯA dùng
+  `_try_merge_or_connect_to_core` (vẫn `_connect_to_core` như cũ).
+- `_source_feeds_tile()` coi MỌI router/junction/sorter/overflow-gate/bridge
+  gặp trên đường là "có thể chạm" (return True ngay, không dò tiếp bên trong
+  nhánh rẽ) -- xấp xỉ AN TOÀN (dư rate) chứ không chính xác tuyệt đối, có
+  thể chặn nhầm 1 vài merge thật ra an toàn nếu producer khác chỉ đi qua 1
+  nhánh KHÔNG liên quan của router đó.
+- `command["merge"]` không lan qua `parse_commands()` (xem trên) -- chỉ
+  dùng được qua `plan_build()` trực tiếp hoặc câu build+merge chung 1 mệnh
+  đề, chưa hỗ trợ câu ghép nhiều đoạn kiểu "khai thác đồng và chì, nối
+  chung lại".
+
 ## Sorter (bộ lọc) -- nối vào flow tracing, KHÁC Router
 
 Bạn chỉ đúng: "than đi thẳng vào X, còn lại rẽ sang Y" không phải việc của

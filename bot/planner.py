@@ -16,7 +16,7 @@ from collections import deque
 
 from simulator.buildings import CATALOG, DIRECTIONS, ITEMS, LIQUIDS
 from simulator.grid import Grid, PlacedBuilding
-from simulator.sim import _power_linked, evaluate_layout, produced_item, produced_liquid, trace_belt_path
+from simulator.sim import SOURCE_KINDS, _power_linked, evaluate_layout, produced_item, produced_liquid, trace_belt_path
 
 
 def find_producer(grid: Grid, item_name: str):
@@ -821,6 +821,111 @@ def _connect_to_core(grid: Grid, actions: list, source, error_prefix: str):
            f"{error_prefix} nhưng không tìm được đường belt nối tới core")
 
 
+_BRANCHING_KINDS = ("router", "junction", "sorter", "overflow-gate", "bridge", "mass-driver")
+
+
+def _source_feeds_tile(grid: Grid, source, tile, max_steps: int = 500) -> bool:
+    """Đi theo chuỗi belt từ output_tile() của `source` (theo đúng rotation
+    từng ô, giống item chảy trong game thật) xem có đi QUA `tile` không --
+    dùng để biết producer nào ĐANG THỰC SỰ dùng đoạn belt sắp merge vào,
+    thay vì cộng dồn rate của MỌI producer trên map (quá bảo thủ, chặn nhầm
+    merge an toàn trên map có nhiều nhánh không liên quan tới nhau).
+
+    Gặp router/junction/sorter/overflow-gate/bridge/mass-driver (rẽ nhánh,
+    không đi thẳng 1 hướng cố định) -> coi như CÓ THỂ chạm `tile` (giả định
+    an toàn hơn: thà tính dư rate còn hơn bỏ sót, tránh merge làm nghẽn belt
+    thật)."""
+    cur = source.output_tile()
+    visited = set()
+    for _ in range(max_steps):
+        if cur == tile:
+            return True
+        if cur in visited:
+            return False
+        visited.add(cur)
+        b = grid.building_at(*cur)
+        if b is None or b is source:
+            return False
+        if b.type.kind in _BRANCHING_KINDS:
+            return True
+        if b.type.kind != "belt":
+            return False
+        dx, dy = DIRECTIONS[b.rotation]
+        cur = (cur[0] + dx, cur[1] + dy)
+    return False
+
+
+def _try_merge_or_connect_to_core(grid: Grid, actions: list, source, error_prefix: str, force: bool = False):
+    """Nối `source` (drill mới đặt) về core -- ƯU TIÊN nhập vào 1 đường belt
+    ĐÃ CÓ SẴN (từ producer khác) nếu AN TOÀN, thay vì luôn tự đi 1 đường
+    RIÊNG như _connect_to_core cũ.
+
+    User: "chỉ nên nhập khi được yêu cầu hoặc số lượng item trên băng
+    chuyền không bị quá nhiều" -- 2 điều kiện trigger merge (OR, không phải
+    AND): `force=True` (lệnh nói rõ "nối chung"/"gộp chung" -- xem
+    command_parser.py MERGE_PHRASES), HOẶC tổng rate (item/s) của source này
+    CỘNG với rate của (các) producer khác ĐANG THỰC SỰ dùng đúng đoạn belt
+    merge vào (xem _source_feeds_tile -- không phải mọi producer trên map)
+    không vượt quá base_rate của conveyor (6.5 item/s thật, Conveyor.java)
+    -- tránh nghẽn belt chỉ vì "gộp cho gọn". Không an toàn VÀ không force
+    -> rơi về _connect_to_core cũ (đường riêng), KHÔNG đánh đổi throughput
+    lấy việc "trông gọn".
+
+    Best-effort: nếu không có belt nào sẵn trên map, hoặc không tìm được
+    đường BFS chạm vào 1 belt sẵn có, rơi về _connect_to_core như cũ (không
+    coi là lỗi -- merge chỉ là tối ưu thêm, không phải yêu cầu bắt buộc)."""
+    core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
+    if core is None:
+        return
+
+    existing_belts = [(b.x, b.y) for b in grid.unique_buildings() if b.type.kind == "belt"]
+    if existing_belts:
+        out_tile = source.output_tile()
+        merge_path = find_belt_path(grid, out_tile, existing_belts)
+        if merge_path == []:
+            # find_belt_path coi "start đã CHẠM target" là không cần đặt gì
+            # thêm -- đúng cho core/generator (building nhận thẳng từ ô kề,
+            # xem NEXT_STEPS.md mục "touching placement"), nhưng SAI cho
+            # belt: 1 ô conveyor CHỈ nhận item đặt THẲNG lên chính nó, không
+            # "vói" sang ô trống kề bên (khác core -- core tự hút từ mọi ô
+            # chạm chân đế). Nếu để trống, drill kẹt hàng, core không nhận
+            # được gì (bug thật tự bắt được khi test: core output_rate chỉ
+            # bằng đúng nguồn CŨ, nguồn MỚI biến mất khỏi find_connections dù
+            # rate tính riêng > 0). Cần đặt THẬT 1 ô conveyor tại out_tile,
+            # quay mặt về phía belt có sẵn.
+            touch = next(
+                (t for t in existing_belts
+                 if t in {(out_tile[0] + dx, out_tile[1] + dy) for dx, dy in DIRECTIONS}),
+                None,
+            )
+            if touch is not None and grid.building_at(*out_tile) is None and grid.can_place(CATALOG["conveyor"], *out_tile):
+                rotation = DIRECTIONS.index((touch[0] - out_tile[0], touch[1] - out_tile[1]))
+                merge_path = [(out_tile[0], out_tile[1], rotation)]
+            else:
+                merge_path = None
+        if merge_path is not None:
+            merge_tile = merge_path[-1][:2]
+            touching = [t for t in existing_belts if t in {
+                (merge_tile[0] + dx, merge_tile[1] + dy) for dx, dy in DIRECTIONS
+            }]
+            result = evaluate_layout(grid)
+            own_rate = result["output_rate"].get(source, 0.0)
+            other_rate = sum(
+                result["output_rate"].get(b, 0.0)
+                for b in grid.unique_buildings()
+                if b is not source and b.type.kind in SOURCE_KINDS
+                and any(_source_feeds_tile(grid, b, t) for t in touching)
+            )
+            safe = (own_rate + other_rate) <= CATALOG["conveyor"].base_rate
+            if force or safe:
+                for bx, by, rotation in merge_path:
+                    grid.place(CATALOG["conveyor"], bx, by, rotation=rotation)
+                    actions.append({"op": "place", "building": "conveyor", "x": bx, "y": by, "rotation": rotation})
+                return
+
+    _connect_to_core(grid, actions, source, error_prefix)
+
+
 def _find_power_bridge_spot(grid: Grid, near, preferences: dict = None):
     """Tìm chỗ đặt power-node GẦN `near` mà khi đặt xong sẽ _power_linked
     (xem simulator/sim.py) tới ít nhất 1 building có điện ĐÃ CÓ SẴN trên map
@@ -1522,7 +1627,8 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
         new_drill = grid.place(building_type, x, y, rotation=0, ore_target=ore_target)
         _ensure_powered(grid, actions, new_drill, near=(x, y), scorer=scorer, preferences=preferences)
         _try_boost_with_water(grid, actions, new_drill, preferences=preferences)
-        _connect_to_core(grid, actions, new_drill, f"đã đặt drill '{ore_target}'")
+        _try_merge_or_connect_to_core(grid, actions, new_drill, f"đã đặt drill '{ore_target}'",
+                                       force=command.get("merge", False))
         return actions
 
     if building_type.kind == "beam-drill":
