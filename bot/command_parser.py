@@ -196,6 +196,14 @@ TIER_RE = re.compile(r"(?:cấp|tier)\s*(\d+)")
 # nào. Chỉ áp dụng cho drill (có ore_target) -- xem docstring plan_fill_ore.
 FILL_PHRASES = ("phủ kín mỏ", "phủ kín", "phủ hết mỏ", "phủ hết", "hết mỏ", "toàn bộ mỏ", "cả mỏ")
 
+# ConsumeGenerator.java thật (combustion-generator/steam-generator) -- user
+# hỏi "xây 21 máy phát điện siêu nhỏ" thì bot có tự cấp than + dùng chung 1
+# nguồn qua router không (xem NEXT_STEPS.md mục "cụm generator") -- cần bắt
+# được SỐ LƯỢNG để biết đây là lệnh xây CỤM (plan_build_generator_cluster),
+# khác lệnh xây 1 generator thường.
+_GENERATOR_NAMES = {"combustion-generator", "steam-generator"}
+COUNT_RE = re.compile(r"\b(\d+)\b")
+
 
 def _find_hint(text: str, building: str = None):
     """Toạ độ, thứ tự, hoặc (với drill) loại ore để phân biệt khi có nhiều
@@ -248,9 +256,16 @@ def _find_location_hint(text: str):
 def parse_command(text: str) -> dict:
     normalized = text.lower().strip()
 
+    # Bug thật phát hiện khi test lệnh cụm generator: "phá" (ACTION_PHRASES
+    # -> delete) là SUBSTRING của "phát" trong "máy phát điện" -- match kiểu
+    # `phrase in normalized` (dùng suốt file này cho hầu hết phrase khác,
+    # thường an toàn vì building/ore name đủ dài/đặc trưng) khiến "xây máy
+    # phát điện" bị hiểu nhầm hoàn toàn thành action="delete". Riêng
+    # ACTION_PHRASES cần ranh giới từ thật (\b) vì có phrase quá ngắn/dễ
+    # trùng biên chữ tiếng Việt như thế này.
     action = "build"
     for phrase in sorted(ACTION_PHRASES, key=len, reverse=True):
-        if phrase in normalized:
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
             action = ACTION_PHRASES[phrase]
             break
 
@@ -318,6 +333,11 @@ def parse_command(text: str) -> dict:
         liquid = _find_liquid(normalized)
         if liquid is not None:
             command["liquid_target"] = liquid
+
+    if action == "build" and building in _GENERATOR_NAMES:
+        m = COUNT_RE.search(normalized)
+        if m:
+            command["count"] = int(m.group(1))
         command["liquid_location_hint"] = _find_location_hint(normalized)
 
     return command

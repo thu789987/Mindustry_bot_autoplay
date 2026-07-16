@@ -55,5 +55,5 @@ result2 = evaluate_layout(grid2)
 gen2 = next(b for b in grid2.unique_buildings() if b.type.kind == "generator")
 print(f"  công suất phát: {result2['power_production'][gen2]:.2f}")
 assert result2["power_production"][gen2] > 0, "SAI: steam-generator phải tự nối đủ than+nước rồi phát điện được"
-assert any(a["building"] == "mechanical-pump" for a in actions2), "SAI: phải tự đặt pump nước cho steam-generator"
+assert any(a.get("building") == "mechanical-pump" for a in actions2), "SAI: phải tự đặt pump nước cho steam-generator"
 print("  ĐÚNG: steam-generator tự đặt CẢ drill than lẫn pump nước, phát điện được.")

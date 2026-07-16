@@ -138,6 +138,28 @@ assert MD.boost_intensity == 1.6 and CATALOG["pneumatic-drill"].boost_intensity 
     "SAI: mechanical/pneumatic/laser phải dùng default 1.6 (không ghi đè)"
 print("  ĐÚNG.\n")
 
+
+print("--- Kịch bản 5: nếu có chỗ SÁT drill đủ attribute -> đặt water-extractor CHẠM THẲNG, KHÔNG cần conduit ---")
+# User: "thường water drill sẽ đặt sát bên máy drill để khỏi đặt ống nước
+# hay gì hết" -- xác nhận _find_touching_solid_pump_spot() ưu tiên đúng.
+grid5 = Grid(width=30, height=30)
+for x, y in [(5, 5), (6, 5), (5, 6), (6, 6)]:
+    grid5.set_ore(x, y, "lead")
+grid5.set_attribute(7, 5, "water")  # ngay sát cạnh Đông của drill (5,5)-(6,6)
+d5 = grid5.place(MD, 5, 5, rotation=0, ore_target="lead")
+actions5 = []
+_try_boost_with_water(grid5, actions5, d5)
+n_conduit5 = sum(1 for a in actions5 if a["op"] == "place" and a["building"] == "conduit")
+n_pump5 = sum(1 for a in actions5 if a["op"] == "place" and a["building"] == "water-extractor")
+print(f"  conduit đặt: {n_conduit5}, water-extractor đặt: {n_pump5}")
+assert n_pump5 == 1, "SAI: phải đặt được 1 water-extractor sát drill"
+assert n_conduit5 == 0, "SAI: có chỗ sát drill đủ attribute thì KHÔNG được đặt conduit nào cả"
+result5 = evaluate_layout(grid5)
+expected5 = base_rate(MD, "lead", 4) * MD.boost_intensity
+print(f"  rate: {result5['output_rate'][d5]:.6f}/s (kỳ vọng {expected5:.6f}/s = full boost, xác nhận nước THẬT nối tới)")
+assert abs(result5["output_rate"][d5] - expected5) < 1e-6, "SAI: đặt sát mà không thật sự nối được nước (chỉ đặt suông)"
+print("  ĐÚNG: đặt sát drill, chạm thẳng footprint, không tốn 1 ô conduit nào, vẫn full boost.\n")
+
 print("XÁC NHẬN: liquid boost hoạt động đúng thật -- optional (không nước vẫn")
 print("chạy rate nền), lerp liên tục theo tỉ lệ nước cấp được (không nhị phân),")
 print("và boost_intensity đúng riêng từng tier (1.6x hầu hết, 1.8x blast-drill).")

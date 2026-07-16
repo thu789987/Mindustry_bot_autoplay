@@ -354,6 +354,17 @@ def find_belt_path(grid: Grid, start, target_footprint):
                 continue
             if grid.building_at(*nxt) is not None:
                 continue
+            # Tile.buildable (grid.py) trước giờ KHÔNG building nào set False
+            # nên chưa lộ ra -- BFS trước đây chỉ kiểm "có building chưa",
+            # không kiểm buildable, khiến nó có thể tự tìm đường XUYÊN QUA ô
+            # bị chặn (rồi grid.place() sau đó mới báo lỗi "cannot place").
+            # Cần đúng cho cả 2 việc: (1) đất không xây được thật (vd nước),
+            # (2) chặn tạm thời 1 vùng để ép BFS đi vòng (xem
+            # plan_build_generator_cluster -- chặn margin quanh cụm double-
+            # sided router để than không vô tình chạy sát hàng router khác,
+            # tạo chu trình vô hạn trong đồ thị router).
+            if not grid.tiles[nxt[1]][nxt[0]].buildable:
+                continue
             came_from[nxt] = cur
             queue.append(nxt)
 
@@ -390,6 +401,50 @@ def _route(grid: Grid, actions: list, start_tile, target_footprint, belt_type, e
         grid.place(belt_type, bx, by, rotation=rotation)
         actions.append({"op": "place", "building": belt_type.name, "x": bx, "y": by, "rotation": rotation})
     return path
+
+
+def _add_overflow_to_core(grid: Grid, actions: list, path: list, core):
+    """Sau khi _route() nối xong producer -> consumer (vd drill than ->
+    generator) bằng conveyor thường, "nâng cấp" Ô CUỐI (ô chạm thẳng
+    consumer) thành overflow-gate, rồi thử rẽ thêm 1 nhánh từ cạnh VUÔNG
+    GÓC của nó về core. User: "khi băng chuyền vào điện đầy thì tài nguyên
+    tự động về core chứ không phải kẹt cứng" -- KHÔNG cần simulator mô
+    phỏng đúng thời điểm "đầy" (xem NEXT_STEPS.md, overflow-gate trong
+    simulator này là xấp xỉ TĨNH, luôn ưu tiên đường thẳng 100%) -- chỉ cần
+    bot XÂY SẴN đường thoát dự phòng, đúng cách người chơi thật tránh belt
+    bị nghẽn cứng khi consumer đã no trong game thật (không ảnh hưởng số
+    liệu mô phỏng ở đây, chỉ thêm hạ tầng an toàn cho gameplay thật).
+
+    KHÔNG BẮT BUỘC -- nếu path rỗng (producer đã chạm thẳng consumer, không
+    có ô belt nào để nâng cấp) hoặc không tìm được chỗ rẽ/đường tới core,
+    bỏ qua ÊM, không raise lỗi (producer vẫn nối consumer bình thường, chỉ
+    thiếu phần an toàn dự phòng)."""
+    if not path or core is None:
+        return
+    lx, ly, rotation = path[-1]
+    gate_type = CATALOG["overflow-gate"]
+    old = grid.building_at(lx, ly)
+    if old is not None:
+        grid.remove(old)
+    if not grid.can_place(gate_type, lx, ly):
+        # Không đặt lại được (hiếm, phòng hờ) -- khôi phục conveyor cũ, bỏ qua êm.
+        if old is not None:
+            grid.place(old.type, lx, ly, rotation=old.rotation)
+        return
+    grid.place(gate_type, lx, ly, rotation=rotation)
+    actions.append({"op": "remove", "x": lx, "y": ly})
+    actions.append({"op": "place", "building": "overflow-gate", "x": lx, "y": ly, "rotation": rotation})
+
+    for side_dir in ((rotation + 1) % 4, (rotation - 1) % 4):
+        sdx, sdy = DIRECTIONS[side_dir]
+        side_tile = (lx + sdx, ly + sdy)
+        if not grid.in_bounds(*side_tile) or grid.building_at(*side_tile) is not None:
+            continue
+        try:
+            _route(grid, actions, side_tile, core.footprint(), CATALOG["conveyor"], "overflow tới core (bỏ qua)")
+            return
+        except RuntimeError:
+            continue
 
 
 def _clear_belt_chain(grid: Grid, actions: list, start_tile, belt_kind: str = "belt"):
@@ -865,6 +920,16 @@ def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, pref
     actions.append({"op": "place", "building": drill_type.name, "x": dx, "y": dy, "rotation": 0, "ore_target": "coal"})
     coal_producer = grid.place(drill_type, dx, dy, rotation=0, ore_target="coal")
 
+    # KHÔNG gọi _add_overflow_to_core() ở đây -- _ensure_powered() được gọi
+    # từ RẤT nhiều ngữ cảnh lồng nhau (drill/pump/factory/generator-cluster/
+    # cả bên trong filter_split khi tự xây factory cần điện) -- verify thật
+    # bằng debug script phát hiện: overflow-gate + nhánh về core thêm vào
+    # đây có thể VÔ TÌNH chiếm đúng hướng mà 1 lệnh KHÁC (vd sorter của
+    # filter_split) cần để tự nối riêng tới core, gây "không tìm được
+    # đường" giả cho lệnh đó (bug thật gặp khi test: bot/split_command_demo.py,
+    # bot/llm_split_demo.py fail sau khi thêm). An toàn hơn: chỉ thêm nhánh
+    # dự phòng ở nhánh "generator" TRỰC TIẾP của plan_build() (lệnh "xây máy
+    # phát điện" rõ ràng, ít lồng ghép hơn hẳn) -- xem NEXT_STEPS.md.
     _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
            f"'{building.type.name}' cần điện nhưng không nối được than tới combustion-generator")
 
@@ -880,6 +945,45 @@ def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, pref
             nx, ny = node_spot
             grid.place(node_type, nx, ny, rotation=0)
             actions.append({"op": "place", "building": "power-node", "x": nx, "y": ny, "rotation": 0})
+
+
+def _find_touching_solid_pump_spot(grid: Grid, drill, attribute_name: str, solid_pump_type):
+    """Tìm (x, y, rotation) đặt solid_pump_type SÁT 1 CẠNH của `drill` sao
+    cho output_tile() của nó rơi ĐÚNG vào 1 ô trong footprint drill -- liquid
+    chuyển thẳng qua adjacency (xem simulator/sim.py:_trace_branching, case
+    fallthrough `return [(b, capacity)]` khi building đích không phải
+    belt/router/... -- KHÔNG cần đặt conduit nào cả, giống hệt cách router
+    "chạm thẳng đích" đã dùng ở phần item, xem plan_split()).
+
+    Thử cả 4 cạnh (Đông/Tây/Nam/Bắc), mọi vị trí dọc cạnh đó mà pump vừa
+    khít -- trả về vị trí ĐẦU TIÊN vừa đặt được (can_place) vừa có attribute
+    dưới chân đế. Trả None nếu không cạnh nào có (map/địa hình không đủ
+    attribute ngay sát drill -- caller nên lùi về near+conduit)."""
+    ds = drill.type.size
+    ps = solid_pump_type.size
+    mid = ps // 2
+    dx0, dy0 = drill.x, drill.y
+
+    candidates = []
+    for k in range(dy0 - mid, dy0 + ds - mid):
+        candidates.append((dx0 + ds, k, 2))  # sát cạnh Đông, quay mặt Tây vào drill
+        candidates.append((dx0 - ps, k, 0))  # sát cạnh Tây, quay mặt Đông vào drill
+    for k in range(dx0 - mid, dx0 + ds - mid):
+        candidates.append((k, dy0 + ds, 3))  # sát cạnh Nam, quay mặt Bắc vào drill
+        candidates.append((k, dy0 - ps, 1))  # sát cạnh Bắc, quay mặt Nam vào drill
+
+    drill_footprint = set(drill.footprint())
+    for px, py, rotation in candidates:
+        if not grid.can_place(solid_pump_type, px, py):
+            continue
+        footprint = [(px + fx, py + fy) for fx in range(ps) for fy in range(ps)]
+        if not any(grid.in_bounds(fx, fy) and grid.tiles[fy][fx].attribute == attribute_name for fx, fy in footprint):
+            continue
+        probe = PlacedBuilding(solid_pump_type, px, py, rotation=rotation)
+        if probe.output_tile() not in drill_footprint:
+            continue  # phòng sai công thức _edge_tile -- double-check thật trước khi tin
+        return (px, py, rotation)
+    return None
 
 
 def _try_boost_with_water(grid: Grid, actions: list, drill, preferences: dict = None):
@@ -933,6 +1037,22 @@ def _try_boost_with_water(grid: Grid, actions: list, drill, preferences: dict = 
     )
     if solid_pump_type is None:
         return
+
+    # Ưu tiên đặt SÁT drill (chạm thẳng, không cần conduit) trước -- đúng ý
+    # người dùng: "thường water drill sẽ đặt sát bên máy drill để khỏi đặt
+    # ống nước hay gì hết". Chỉ lùi về near+conduit nếu không cạnh nào của
+    # drill có đủ attribute (địa hình không cho phép đặt sát).
+    touching = _find_touching_solid_pump_spot(grid, drill, solid_pump_type.solid_pump_attribute, solid_pump_type)
+    if touching is not None:
+        px, py, rotation = touching
+        new_pump = grid.place(solid_pump_type, px, py, rotation=rotation)
+        actions.append({"op": "place", "building": solid_pump_type.name, "x": px, "y": py, "rotation": rotation})
+        try:
+            _ensure_powered(grid, actions, new_pump, near=(px, py), preferences=preferences)
+        except RuntimeError:
+            pass
+        return
+
     attr_pos = find_unmined_attribute(grid, solid_pump_type.solid_pump_attribute, near=near)
     if attr_pos is None:
         return
@@ -1157,12 +1277,190 @@ def plan_fill_ore(grid: Grid, command: dict, scorer=None, preferences: dict = No
     return actions
 
 
+def _generator_cluster_layout(count: int, width: int) -> list:
+    """Chia N generator thành các hàng rộng tối đa `width` (hàng cuối có thể
+    ít hơn) -- trả về list số lượng generator mỗi hàng."""
+    layout = []
+    remaining = count
+    while remaining > 0:
+        row_count = min(width, remaining)
+        layout.append(row_count)
+        remaining -= row_count
+    return layout
+
+
+def _generator_cluster_fits(grid: Grid, building_type, router_type, row_counts: list, start_x: int, start_y: int, preferences: dict = None) -> bool:
+    """Kiểm TOÀN BỘ lưới (mọi hàng generator + mọi hàng router + cột spine
+    conn_x) đều đặt được, không vướng gì -- dùng cho
+    _find_generator_cluster_spot()."""
+    from bot.preferences import violates
+
+    s = building_type.size
+    width = max(row_counts)
+    conn_x = start_x + width * s
+    for i, row_count in enumerate(row_counts):
+        gy = start_y + i * (s + 1)
+        for j in range(row_count):
+            gx = start_x + j * s
+            if not grid.can_place(building_type, gx, gy):
+                return False
+            if preferences is not None and violates(grid, (gx, gy), preferences):
+                return False
+    router_rows = max(len(row_counts) - 1, 1)
+    for k in range(router_rows):
+        ry = start_y + k * (s + 1) + s
+        for j in range(width):
+            if not grid.can_place(router_type, start_x + j * s, ry):
+                return False
+        if not grid.can_place(router_type, conn_x, ry):
+            return False
+    return True
+
+
+def _find_generator_cluster_spot(grid: Grid, building_type, router_type, row_counts: list, near, preferences: dict = None):
+    """Quét vòng tròn mở rộng từ `near` tìm (x,y) góc trên-trái sao cho ĐỦ
+    chỗ cho TOÀN BỘ lưới generator+router+spine -- trả None nếu không tìm
+    được trong toàn map."""
+    nx, ny = near
+    max_radius = max(grid.width, grid.height)
+    for radius in range(max_radius):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue
+                x, y = nx + dx, ny + dy
+                if _generator_cluster_fits(grid, building_type, router_type, row_counts, x, y, preferences):
+                    return (x, y)
+    return None
+
+
+def plan_build_generator_cluster(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
+    """"Xây N máy phát điện" -- xếp N generator thành LƯỚI nhiều hàng (rộng
+    tối đa 6/hàng, giống schematic thật "Basic power plant V.1" user cung
+    cấp), mỗi hàng router NẰM GIỮA 2 hàng generator liên tiếp CHẠM CẢ 2 BÊN
+    cùng lúc (double-sided -- đúng thiết kế trong schematic thật, tiết kiệm
+    hơn hẳn "1 router/generator"). Các hàng router nối với nhau qua 1 CỘT
+    DỌC riêng (spine, tại conn_x, ngay bên phải hàng rộng nhất) -- than nạp
+    vào ĐÚNG 1 điểm duy nhất ở đỉnh spine, tự chảy xuống nạp cho MỌI hàng.
+
+    Bug thật phát hiện khi làm tính năng này (tự test bằng debug script,
+    verify TRƯỚC khi merge): đường belt dẫn than (tìm bằng BFS tổng quát,
+    _route()) có thể VÔ TÌNH chạy sát cạnh 1 hàng router KHÁC (không phải
+    hàng nó định nối tới) -- router coi bất kỳ ô kề nào có building là hàng
+    xóm hợp lệ (kể cả belt không liên quan), tạo thành CHU TRÌNH VÔ HẠN
+    trong đồ thị tính throughput (RecursionError khi evaluate_layout()).
+    Sửa 2 chỗ: (1) find_belt_path() (dùng chung toàn dự án) trước đây KHÔNG
+    kiểm cờ Tile.buildable (chỉ kiểm có building hay chưa) -- giờ kiểm đúng,
+    cho phép (2) hàm này CHẶN TẠM 1 vòng biên (margin) quanh toàn bộ cụm
+    trước khi định tuyến than, chỉ chừa đúng 1 lỗ ở đỉnh spine -- ép BFS đi
+    vòng ra ngoài thay vì có thể lách vào sát 1 hàng router bất kỳ, rồi mở
+    lại buildable ngay sau khi đặt xong belt."""
+    building_name = command["building"]
+    building_type = CATALOG[building_name]
+    count = command.get("count")
+    if count is None or count < 1:
+        raise ValueError("generator cluster command needs a count (e.g. 'xây 5 máy phát điện')")
+    if building_type.generator_liquid_inputs:
+        raise RuntimeError(
+            f"'{building_name}' cần cả liquid ({list(building_type.generator_liquid_inputs)}) -- lệnh xây cụm "
+            f"hiện CHỈ hỗ trợ generator thuần than (vd combustion-generator), chưa hỗ trợ steam-generator"
+        )
+
+    core = next((b for b in grid.unique_buildings() if b.type.kind == "core"), None)
+    core_pos = (core.x, core.y) if core is not None else (0, 0)
+
+    s = building_type.size
+    router_type = CATALOG["router"]
+    width = min(count, 6)  # mặc định giống schematic thật (6/hàng)
+    row_counts = _generator_cluster_layout(count, width)
+
+    spot = _find_generator_cluster_spot(grid, building_type, router_type, row_counts, near=core_pos, preferences=preferences)
+    if spot is None:
+        raise RuntimeError(f"không tìm được chỗ trống đủ rộng cho {count} '{building_name}'")
+    start_x, start_y = spot
+    conn_x = start_x + width * s
+
+    actions = []
+    for i, row_count in enumerate(row_counts):
+        gy = start_y + i * (s + 1)
+        for j in range(row_count):
+            gx = start_x + j * s
+            actions.append({"op": "place", "building": building_name, "x": gx, "y": gy, "rotation": 0})
+            grid.place(building_type, gx, gy, rotation=0)
+
+    router_rows = max(len(row_counts) - 1, 1)
+    router_row_ys = []
+    for k in range(router_rows):
+        ry = start_y + k * (s + 1) + s
+        router_row_ys.append(ry)
+        for j in range(width):
+            rx = start_x + j * s
+            actions.append({"op": "place", "building": "router", "x": rx, "y": ry, "rotation": 0})
+            grid.place(router_type, rx, ry, rotation=0)
+        actions.append({"op": "place", "building": "router", "x": conn_x, "y": ry, "rotation": 0})
+        grid.place(router_type, conn_x, ry, rotation=0)
+
+    # Nối các hàng router với nhau qua cột spine (conveyor hướng Nam lấp
+    # đầy khoảng trống giữa 2 hàng router liên tiếp).
+    for k in range(len(router_row_ys) - 1):
+        y_top, y_bot = router_row_ys[k], router_row_ys[k + 1]
+        for gy in range(y_top + 1, y_bot):
+            actions.append({"op": "place", "building": "conveyor", "x": conn_x, "y": gy, "rotation": 1})
+            grid.place(CATALOG["conveyor"], conn_x, gy, rotation=1)
+
+    # Chặn tạm 1 vòng biên quanh toàn bộ cụm (xem docstring: tránh belt than
+    # vô tình chạm sát 1 hàng router khác, tạo chu trình vô hạn) -- chỉ
+    # chừa đúng 1 lỗ ở đỉnh spine cho than đi vào.
+    min_x, max_x = start_x - 1, conn_x + 1
+    min_y, max_y = start_y - 1, router_row_ys[-1] + 1
+    entry_x, entry_y = conn_x, min_y
+    blocked = []
+    for by in range(min_y, max_y + 1):
+        for bx in range(min_x, max_x + 1):
+            if by in (min_y, max_y) or bx in (min_x, max_x):
+                if (bx, by) == (entry_x, entry_y):
+                    continue
+                if grid.in_bounds(bx, by) and grid.building_at(bx, by) is None:
+                    grid.tiles[by][bx].buildable = False
+                    blocked.append((bx, by))
+
+    try:
+        ore_pos = find_unmined_ore(grid, "coal", near=core_pos)
+        if ore_pos is None:
+            raise RuntimeError(f"'{building_name}' cần than nhưng không có mỏ than nào chưa khai thác trên map")
+        drill_type = select_drill_type(ITEMS["coal"].hardness, scorer=scorer)
+        drill_spot = find_drill_spot(grid, "coal", near=ore_pos, drill_type=drill_type)
+        if drill_spot is None:
+            raise RuntimeError("không tìm được chỗ đặt drill than cho cụm generator")
+        dx, dy = drill_spot
+        actions.append({"op": "place", "building": drill_type.name, "x": dx, "y": dy, "rotation": 0, "ore_target": "coal"})
+        coal_drill = grid.place(drill_type, dx, dy, rotation=0, ore_target="coal")
+        _route(grid, actions, coal_drill.output_tile(), [(conn_x, router_row_ys[0])], CATALOG["conveyor"],
+               f"đã đặt {count} '{building_name}' nhưng không nối được than tới cụm")
+    finally:
+        for bx, by in blocked:
+            grid.tiles[by][bx].buildable = True
+
+    # 1 power-node chạm cụm để tap điện ra ngoài -- đúng ý schematic thật
+    # ("dùng power-node này để nối các building khác cần điện").
+    node_spot = find_free_area(grid, CATALOG["power-node"], near=(start_x, start_y), preferences=preferences)
+    if node_spot is not None:
+        nx, ny = node_spot
+        grid.place(CATALOG["power-node"], nx, ny, rotation=0)
+        actions.append({"op": "place", "building": "power-node", "x": nx, "y": ny, "rotation": 0})
+
+    return actions
+
+
 def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None) -> list:
     if command.get("action") != "build":
         raise ValueError(f"unsupported command: {command}")
 
     if command.get("fill"):
         return plan_fill_ore(grid, command, scorer=scorer, preferences=preferences)
+
+    if command.get("count") is not None:
+        return plan_build_generator_cluster(grid, command, scorer=scorer, preferences=preferences)
 
     building_name = command["building"]
 
@@ -1352,8 +1650,9 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
         dx, dy = drill_spot
         actions.append({"op": "place", "building": drill_type.name, "x": dx, "y": dy, "rotation": 0, "ore_target": "coal"})
         coal_producer = grid.place(drill_type, dx, dy, rotation=0, ore_target="coal")
-        _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
+        coal_path = _route(grid, actions, coal_producer.output_tile(), new_gen.footprint(), CATALOG["conveyor"],
                f"'{building_name}' cần than nhưng không nối được đường belt")
+        _add_overflow_to_core(grid, actions, coal_path, core)
 
         for liquid_name, amount_per_cycle in building_type.generator_liquid_inputs.items():
             liquid_pos = find_untapped_liquid(grid, liquid_name, near=near)

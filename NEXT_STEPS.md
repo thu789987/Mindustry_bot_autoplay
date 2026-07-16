@@ -1768,3 +1768,385 @@ từ số lượng conveyor ít.
   riêng nó, không chia sẻ) -- cùng kiểu đơn giản hoá "steady-state xấp xỉ"
   đã áp dụng ở mọi nơi khác trong simulator, không phải bug riêng của
   manifold.
+
+## water-extractor: ưu tiên đặt SÁT drill (chạm thẳng, bỏ hẳn conduit) thay vì near+conduit
+
+User hỏi "water drill để làm gì... thường water drill sẽ đặt sát bên máy
+drill để khỏi đặt ống nước hay gì hết". Lúc đầu tôi hiểu nhầm thành ý muốn
+đổi sang `steam-generator` (đốt nước làm điện) -- user chỉnh lại: không
+liên quan gì tới điện phát ra từ nước, chỉ đơn giản là muốn đặt SÁT drill để
+khỏi tốn conduit, và nếu đặt nhiều cái (cụm) thì từng cái vẫn phải tự có
+điện (đã có sẵn, xem `_ensure_powered` gọi trong `_try_boost_with_water`
+-- không phải gap mới).
+
+### Đã xác nhận qua code thật (trước khi sửa)
+
+`plan_build()` nhánh `solid-pump` (lệnh trực tiếp "xây water-extractor")
+search `near=core_pos` -- tìm gần CORE, không hề biết drill nào cần nước.
+`_try_boost_with_water()` (tự động khi drill cần boost) đã search
+`near=(drill.x, drill.y)` đúng hướng, nhưng vẫn chỉ là "gần" rồi tự nối
+`conduit` qua `_route()`, chưa từng thử đặt CHẠM THẲNG để bỏ hẳn conduit.
+
+### Cơ chế thật cho phép "chạm thẳng không cần belt/conduit"
+
+`simulator/sim.py:_trace_branching()` case fallthrough (khi building đích
+không phải belt/router/sorter/junction/bridge/mass-driver): `return [(b,
+capacity)]` -- nghĩa là nếu `output_tile()` của 1 building rơi ĐÚNG vào ô
+footprint của building khác, 2 bên tự động coi là đã nối, KHÔNG cần
+belt/conduit gì ở giữa (đúng cơ chế thật Mindustry: 2 building kề nhau tự
+chuyển hàng/liquid trực tiếp).
+
+### Đã làm
+
+`bot/planner.py`: `_find_touching_solid_pump_spot(grid, drill,
+attribute_name, solid_pump_type)` -- duyệt 4 cạnh (Đông/Tây/Nam/Bắc) của
+`drill`, với mỗi cạnh tính TOÁN NGƯỢC (dựa công thức `_edge_tile()` thật
+trong `grid.py`) vị trí + rotation đặt solid_pump sao cho `output_tile()`
+rơi đúng vào 1 ô trong footprint drill, kiểm `can_place` + có đủ attribute
+dưới chân đế, verify lại bằng cách tạo `PlacedBuilding` thử (`probe`) và so
+`output_tile()` thật với footprint drill (double-check công thức, không tin
+suông). `_try_boost_with_water()` nhánh solid-pump giờ thử hàm này TRƯỚC,
+chỉ lùi về `find_solid_pump_spot` (near) + `_route()` (conduit) như cũ nếu
+không cạnh nào của drill có đủ attribute.
+
+### Test
+
+`bot/liquid_boost_demo.py` kịch bản 5 (mới): drill có attribute nước ngay
+sát cạnh Đông -- xác nhận đặt được water-extractor, **0 conduit**, và rate
+đo được = full boost (`base_rate * boost_intensity`), chứng minh nước THẬT
+sự nối tới (không chỉ đặt suông cạnh nhau mà không hoạt động).
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- Chỉ áp dụng cho `_try_boost_with_water()` (tự động khi 1 drill CỤ THỂ cần
+  boost) -- lệnh trực tiếp "xây water-extractor" (`plan_build` nhánh
+  `solid-pump`) VẪN search `near=core_pos` như cũ, chưa có khái niệm "đặt
+  sát drill nào" vì lệnh đó không có tham số chỉ định drill đích.
+- Không tự động đặt THÊM water-extractor thứ 2 nếu 1 cái không đủ hiệu suất
+  boost (vd attribute yếu, chỉ 1 ô chạm) -- "đặt theo cụm" user nhắc tới
+  hiện chỉ đúng khi TỰ user gọi lệnh nhiều lần hoặc nhiều drill riêng biệt
+  tự tìm thấy điểm chạm khác nhau, không phải bot tự quyết "1 cái chưa đủ,
+  thêm cái nữa" cho cùng 1 drill.
+- 4 cạnh duyệt theo thứ tự cố định (Đông trước, rồi Tây, Nam, Bắc, xem code)
+  -- không chọn cạnh "tốt nhất" (vd cạnh có nhiều tile attribute nhất), chỉ
+  lấy cạnh ĐẦU TIÊN thoả điều kiện.
+
+## Duct/armored-duct -- lỗ hổng thật phát hiện khi user hỏi "bot nhận diện hết Transport chưa"
+
+User hỏi tổng quát: *"Rồi có bao nhiêu Transport Transportation trong game,
+bot có nhận diện hết cách dùng chưa?"* -- kiểm đếm trực tiếp catalog: 47
+building thuộc Category.distribution, 39 đã có cơ chế thật, 8 chưa. Trong
+8 cái chưa, `plastanium-conveyor`/`surge-conveyor` (class `StackConveyor`)
+và `unit-cargo-*`/`item-source`/`item-void` đều có LÝ DO rõ ràng (cơ chế
+khác hẳn/không phải building thật chơi được) -- riêng `duct`/`armored-duct`
+**không nằm trong bất kỳ danh sách loại trừ nào cả**, đơn giản là bị bỏ sót
+từ đầu dự án (không ai từng hỏi/đụng tới).
+
+### Vì sao không gộp chung được với Conveyor
+
+Tải `Duct.java` thật xác nhận: KHÔNG có field `displayedSpeed` (thứ
+`BELT_CLASSES` cũ luôn đọc cho Conveyor) -- field thật là `speed` (số
+tick/lần chuyển 1 item, đơn vị khác hẳn). Công thức quy đổi lấy ĐÚNG từ
+chính cách game hiển thị chỉ số cho người chơi (`Duct.java` dòng 61):
+`stats.add(Stat.itemsMoved, 60f / speed, StatUnit.itemsSecond)`. Cả
+`duct` lẫn `armored-duct` đều `speed = 4f` -> `base_rate = 60/4 = 15.0`
+items/s (armored chỉ khác máu/giáp, không khác tốc độ).
+
+### Đã làm
+
+`tools/generate_catalog.py`: `DUCT_CLASSES = {"Duct"}` (tách riêng khỏi
+`BELT_CLASSES` vì field khác nhau), nhánh parse riêng đọc `field_float(body,
+"speed", default=5.0)` rồi tính `TICKS_PER_SECOND / raw_speed`, ghi chung
+vào list `belts` (cùng `kind="belt"` với Conveyor -- cơ chế belt-tracing
+trong `sim.py` không phân biệt theo class nguồn, chỉ cần đúng `base_rate`).
+Regenerate catalog: `duct`/`armored-duct` giờ `kind="belt", base_rate=15.0`.
+
+### Test
+
+`bot/duct_demo.py`: xác nhận `base_rate=15.0` đúng công thức cho cả 2
+building, và 1 kịch bản drill→chuỗi duct→core đo throughput thật khớp
+chính xác rate nền của drill (duct không làm mất/sai luồng, hoạt động đúng
+như 1 belt thật).
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- `bot/planner.py` **không có đường nào tự CHỌN đặt duct thay vì conveyor**
+  khi tự động nối route -- mọi `_route()`/`plan_split()`/`_connect_to_core`
+  đều hardcode `CATALOG["conveyor"]`. Thêm Duct vào catalog chỉ giúp
+  `evaluate_layout()` tính ĐÚNG throughput nếu duct đã có sẵn trong state
+  đầu vào (đọc từ map thật/mod dump có duct), KHÔNG phải bot tự xây duct qua
+  lệnh chat -- giống hệt vị trí của bản thân "conveyor" (cũng không phải 1
+  building được planner CHỌN, chỉ là loại belt duy nhất nó biết tự đặt).
+  Muốn bot TỰ CHỌN duct (vd trên map Erekir, ưu tiên duct hơn conveyor) cần
+  thêm logic chọn belt_type theo ngữ cảnh map, chưa làm.
+- Không xử lý `plastanium-conveyor`/`surge-conveyor` (`StackConveyor`) hay
+  `unit-cargo-loader`/`unit-cargo-unload-point` -- vẫn cố ý bỏ qua như cũ,
+  không nằm trong phạm vi câu hỏi này.
+
+## "Xây N máy phát điện" -- cụm generator dùng chung 1 nguồn than qua router (lấy ý từ schematic thật)
+
+User hỏi trực tiếp: *"ví dụ tôi nói bot tạo 21 máy phát điện siêu nhỏ thì
+bot có thể làm giống vậy không? Bot biết được tự thiết lập đầu vào là than
+không? Hay bot sẽ xây dựng 21 cái máy phát điện random và không biết đầu
+vào?"* -- kèm 1 schematic `.msch` THẬT (base64, user tự export từ game) để
+làm mẫu thiết kế đúng.
+
+### Giải mã schematic thật user cung cấp (byte-khớp 722/722)
+
+Dùng lại decoder `.msch` đã verify từ phiên trước (đối chiếu byte-perfect
+với 5 file thật, xem mục "Phase E" lịch sử dự án). Kết quả: **"Basic power
+plant V.1"** -- 18 combustion-generator (3 hàng × 6), 13 router, 2
+power-node, 3 message hướng dẫn. Message thật trong schematic: *"Input
+coal"* (điểm nhập than), *"Coal gets combusted and turned into energy
+through these routers"* (xác nhận cơ chế: router phân phối than, không phải
+mỗi generator tự đào riêng), *"Use these 2 power nodes as connectors to
+other blocks that require power"* (power-node để TAP điện ra ngoài, không
+phải để chính cụm dùng). Layout: mỗi hàng router nằm GIỮA 2 hàng generator
+(router 1 lane phục vụ CẢ 2 hàng trên/dưới cùng lúc) -- tối ưu hơn bản đã
+làm ở đây (xem Giới hạn).
+
+### Trước khi có tính năng này
+
+`plan_build()` nhánh `"generator"` (lệnh xây generator thường) CHỈ hỗ trợ 1
+generator/lệnh -- đã tự cấp than đúng (tự đào drill than riêng, tự nối
+belt), nhưng gọi lệnh đó N=21 lần sẽ ra **21 mỏ than khác nhau** (tự nó dễ
+hết than trên map giữa chừng, raise lỗi) và bố cục rải rác, không giống
+schematic thật.
+
+### Bug thật phát hiện khi test bằng đúng câu lệnh user gợi ý ("máy phát điện")
+
+`parse_command("xây máy phát điện")` bị hiểu SAI thành `action="delete"`!
+Nguyên nhân: `ACTION_PHRASES["phá"]` (xoá) match kiểu `phrase in normalized`
+(substring, không có ranh giới từ) -- "phá" là substring THẬT SỰ của "phát"
+trong "máy phát điện" (p-h-á + t = p-h-á-t). Lỗi này CÓ TỪ ĐẦU DỰ ÁN, chưa
+ai từng phát hiện vì mọi demo cũ đều gọi `plan_build()` trực tiếp với
+command dict tự tạo, KHÔNG đi qua `parse_command()` với đúng cụm từ "máy
+phát điện" thật. Sửa: đổi riêng vòng lặp match `ACTION_PHRASES` sang dùng
+`\b` (ranh giới từ, Python `re` Unicode-aware nên hoạt động đúng với dấu
+tiếng Việt) thay vì substring thô -- các phrase khác trong file (building
+name, ore name...) vẫn giữ nguyên kiểu match substring cũ (đủ dài/đặc trưng
+để an toàn, không đổi để tránh phá vỡ hành vi khác).
+
+### Đã làm
+
+`bot/command_parser.py`: `_GENERATOR_NAMES = {"combustion-generator",
+"steam-generator"}`, `COUNT_RE = re.compile(r"\b(\d+)\b")` -- bắt số ngay
+trong câu khi building là generator, gán `command["count"]`.
+
+`bot/planner.py`: `_find_generator_row_spot()`/`_generator_row_fits()` --
+quét vòng tròn mở rộng (như `find_free_area_candidates`) tìm chỗ đủ rộng
+cho CẢ hàng N generator LẪN hàng N router ngay dưới, liên tục không vướng.
+`plan_build_generator_cluster()`: đặt N generator thành 1 hàng, MỖI generator
+chạm THẲNG (không cần belt, xem `sim.py _trace_branching` fallthrough case)
+1 router riêng ngay dưới nó -- N router liền kề nhau tự tạo thành 1 LANE
+liên tục (Router.java thật: round-robin chia đều cho mọi hướng còn nhận
+được). Chỉ đào **1 drill than DUY NHẤT**, nối belt vào ĐÚNG 1 đầu lane --
+than tự chảy dọc lane, mỗi router rẽ 1 phần vào đúng generator phía trên nó
+(cơ chế y hệt `_trace_branching` router đã dùng khắp dự án, không cần code
+mới). Cuối cùng đặt 1 power-node chạm cụm để tap điện ra ngoài, đúng ý
+message thật trong schematic user cung cấp. `plan_build()` tự dispatch sang
+hàm này nếu `command.get("count")` khác `None`.
+
+### Test
+
+`bot/generator_cluster_demo.py` (3 kịch bản): đối chứng lệnh thường (không
+số) vẫn ra đúng 1 generator, hành vi cũ không đổi; "xây 21 máy phát điện"
+ra ĐÚNG 21 generator + 21 router + **CHỈ 1** coal-drill (không phải 21) + 1
+power-node, đo `evaluate_layout()` thật xác nhận CẢ 21 generator đều sản
+xuất điện > 0; xác nhận vật lý 21 router liền mạch tạo đúng 1 lane liên
+tục (không rời rạc).
+
+### Trả lời trực tiếp câu hỏi user (đo được, không đoán)
+
+21 generator dùng CHUNG 1 mechanical-drill than khiêm tốn: tổng
+`power_production` cả cụm đo được chỉ ~7.76/s (mỗi generator trung bình
+~0.37/s, bị router chia rất mỏng). **Không phải cứ thêm generator là điện
+tăng theo tỉ lệ** -- tổng điện vẫn bị giới hạn bởi tổng than CUNG CẤP ĐƯỢC,
+không phải bởi số generator. Muốn 21 generator thật sự phát huy hết công
+suất (tối đa lý thuyết ~21×60=1260/s nếu mỗi cái no than), cần than nhiều
+hơn hẳn (drill tier cao hơn, hoặc nhiều điểm nhập than) -- **chưa tự động
+hoá phần này**.
+
+### Giới hạn (chưa xử lý, ghi rõ) -- bản đầu (1 hàng, 1 router/generator)
+
+- Chỉ xếp được **1 hàng thẳng** -- không tự wrap sang nhiều hàng nếu N quá
+  lớn/map không đủ rộng theo 1 trục.
+  Không "double-side" router lane (1 router phục vụ 2 hàng generator trên
+  VÀ dưới cùng lúc) như schematic thật user cung cấp -- bản này đơn giản
+  hơn: 1 router chỉ phục vụ đúng 1 generator phía trên nó.
+- Chỉ dùng **1 drill than duy nhất** bất kể N lớn cỡ nào -- không tự scale
+  số lượng/tier drill than theo N để tận dụng hết công suất lý thuyết của
+  cụm (xem mục "Trả lời trực tiếp" ở trên) -- **vẫn CHƯA sửa ở bản double-
+  sided bên dưới, giới hạn này còn nguyên**.
+- `steam-generator` (cần cả than lẫn nước) trong cụm: phần nối `conduit`
+  cho nước hiện route THẲNG vào tile router của lane than -- router là
+  building ITEM, không tương thích conduit -- **bản double-sided bên dưới
+  đã CHẶN HẲN steam-generator cho cụm (raise lỗi rõ ràng), không còn silently
+  sai nữa.**
+
+## "Xây N máy phát điện" nâng cấp lên LƯỚI double-sided -- đúng thiết kế schematic thật
+
+User hỏi thẳng sau khi thấy bản 1-hàng: *"Xếp thành 1 hàng thẳng? bot không
+thể giống thế này được à"* -- kèm gửi LẠI đúng schematic `.msch` cũ để đối
+chiếu. Đúng: bản 1-hàng KHÔNG giống thiết kế thật (schematic dùng lưới 3
+hàng generator × 2 hàng router, mỗi router NẰM GIỮA phục vụ CẢ 2 hàng
+generator trên-dưới cùng lúc -- double-sided, tiết kiệm hơn "1
+router/generator"). Đã làm lại cho đúng.
+
+### Bug thật tự phát hiện + fix trong lúc làm (cả 2 đều nghiêm trọng, verify bằng debug script trước khi merge)
+
+**Bug 1 -- chu trình vô hạn trong đồ thị router (RecursionError)**: khi
+double-sided cần 1 CỘT DỌC (spine) nối nhiều hàng router lại với nhau, và
+đường belt dẫn than (tìm bằng BFS tổng quát `_route()`/`find_belt_path()`)
+tình cờ chạy SÁT CẠNH 1 hàng router KHÁC (không phải hàng đang định nối
+tới) -- vì `_trace_branching()` (sim.py) coi BẤT KỲ building nào kề 1
+router là hàng xóm hợp lệ (kể cả 1 đoạn belt hoàn toàn không liên quan),
+điều này tạo ra 1 CHU TRÌNH thật trong đồ thị: belt → hàng router A → spine
+→ hàng router B → (chạm lại đúng đoạn belt ban đầu) → lặp vô hạn. Debug
+bằng cách tự viết lại `_trace_branching` rút gọn có đếm depth, in từng lời
+gọi ra để soi chính xác vị trí lặp (không đoán) -- xác nhận: router
+(10,8) có hàng xóm TÂY là chính đoạn belt dẫn than đi ngang qua, đóng vòng
+lặp.
+
+**Bug 2 -- `find_belt_path()` không kiểm cờ `Tile.buildable`**: để sửa Bug
+1, cần "chặn tạm" 1 vùng biên (margin) quanh cụm generator trước khi định
+tuyến than, ép BFS đi vòng ra ngoài an toàn. Nhưng phát hiện `find_belt_path()`
+(dùng CHUNG cho toàn bộ dự án, mọi lệnh nối belt) **trước giờ CHỈ kiểm ô có
+building hay chưa, KHÔNG kiểm `grid.tiles[y][x].buildable`** -- field này
+tồn tại từ trước (thêm khi bàn về nước/địa hình không xây được) nhưng CHƯA
+building nào từng set `False` nên gap này chưa từng lộ ra. Sửa: thêm điều
+kiện `buildable` vào vòng lặp mở rộng BFS của `find_belt_path()`
+(`bot/planner.py`) -- sửa 1 chỗ, tự động đúng cho MỌI nơi gọi hàm này, kể
+cả gap "map có nước không xây được" đã ghi nhận trước đó (dù chưa có building
+nào đọc water-tile từ state JSON, engine giờ đã sẵn sàng đúng).
+
+### Đã làm
+
+`_generator_cluster_layout(count, width)`: chia N thành các hàng rộng tối
+đa `width` (mặc định 6, khớp schematic thật), hàng cuối có thể ít hơn.
+`_generator_cluster_fits()`/`_find_generator_cluster_spot()`: quét vòng
+tròn mở rộng tìm chỗ đủ cho TOÀN BỘ lưới (mọi hàng generator + mọi hàng
+router + cột spine), thay `_generator_row_fits`/`_find_generator_row_spot`
+(bản 1-hàng, đã xoá).
+
+`plan_build_generator_cluster()` viết lại: đặt R hàng generator (rộng tối
+đa 6), xen giữa là `max(R-1,1)` hàng router -- mỗi hàng router (trừ trường
+hợp R=1) NẰM GIỮA 2 hàng generator liên tiếp, chạm CẢ 2 BÊN cùng lúc (đúng
+double-sided). Router thêm 1 cột tại `conn_x` (ngay bên phải hàng rộng
+nhất) mỗi hàng, các cột này nối dọc với nhau bằng conveyor lấp khoảng trống
+-- tạo thành 1 CỘT SPINE DUY NHẤT xuyên suốt mọi hàng router. Than chỉ nạp
+vào ĐÚNG 1 điểm ở ĐỈNH spine. Trước khi định tuyến than: chặn tạm 1 vòng
+biên quanh TOÀN BỘ cụm (`grid.tiles[y][x].buildable=False`), chỉ chừa đúng
+1 lỗ ở đỉnh spine -- ép BFS không thể lách vào sát bất kỳ hàng router nào
+(sửa Bug 1), mở lại `buildable=True` ngay sau khi đặt xong belt (dùng
+`try/finally`, đảm bảo mở lại dù `_route()` raise lỗi). `steam-generator`
+(hay bất kỳ generator nào có `generator_liquid_inputs`) bị CHẶN HẲN ngay
+đầu hàm với lỗi rõ ràng, không còn silently sai như bản trước.
+
+### Test
+
+`bot/generator_cluster_demo.py` kịch bản 2 viết lại: xác nhận số hàng
+generator > 1 (với N=21, width mặc định 6 -> 4 hàng), số hàng router =
+`max(R-1,1)` (double-sided thật, không phải R), VÀ xác nhận VẬT LÝ mỗi hàng
+router chạm CẢ hàng generator TRÊN (`y-1`) lẫn DƯỚI (`y+1`) -- không chỉ
+suy luận gián tiếp. Test thêm biên: N=1,5,6,7,12,13,50 (đúng ranh giới
+`width=6`, nhiều hàng, N rất lớn) đều đặt đúng N generator, toàn bộ có sản
+xuất điện > 0 (không có cái nào "chết" vì gap trong spine).
+
+Kết quả đo được (N=21, layout mới): tổng `power_production` **12.87/s**
+(so với 7.76/s của bản 1-hàng cũ, dùng CÙNG 1 mỏ than) -- double-sided
+không chỉ tiết kiệm router mà còn cho throughput cao hơn hẳn nhờ đường
+phân phối ngắn hơn (ít hop router hơn = ít bị router chia nhỏ dần theo
+chuỗi dài).
+
+Regression: 35/35 script pass sau khi sửa (bao gồm cả thay đổi
+`find_belt_path()` -- rủi ro cao nhất vì dùng chung toàn dự án, đã chạy lại
+FULL bộ test để xác nhận không ảnh hưởng gì tới các tính năng khác).
+
+### Giới hạn còn lại (chưa xử lý, ghi rõ)
+
+- Vẫn chỉ dùng **1 drill than duy nhất** bất kể N -- chưa tự scale nguồn
+  than theo số lượng generator (như đã ghi ở bản 1-hàng, chưa sửa).
+- `width` mặc định CỐ ĐỊNH = 6, không tự tính toán bố cục tối ưu theo N
+  (vd hình vuông hơn cho N lớn, hoặc hẹp hơn nếu map chật theo 1 trục).
+- Margin an toàn (chặn `buildable` quanh cụm) tốn thêm 1 vòng ô trống xung
+  quanh -- nếu map đã chật sẵn quanh vị trí định đặt, có thể khiến
+  `_find_generator_cluster_spot()` khó tìm chỗ hơn cần thiết (chưa
+  tối ưu độ rộng margin, luôn cố định 1 ô).
+- `_find_generator_cluster_spot()` vẫn chi phí O(N) mỗi ứng viên vị trí --
+  N rất lớn (hàng trăm) có thể chậm, chưa benchmark thời gian thật.
+
+## Overflow-gate an toàn cho đường than vào generator -- tránh belt kẹt cứng
+
+User hỏi tiếp về overflow-gate: lúc đầu tưởng user muốn mô phỏng ĐÚNG thời
+điểm "đầy" (đã giải thích: simulator này KHÔNG mô phỏng được, chỉ xấp xỉ
+tĩnh) -- user chỉnh lại 3 lần liền cho rõ: *"không cần khi đầy mới rẽ, ý
+tôi là bot xây dựng thế nào mà khi băng chuyền vào điện đầy thì tài nguyên
+tự động về core chứ không phải kẹt cứng"* -- tức chỉ cần bot XÂY SẴN hạ
+tầng vật lý đúng (van an toàn), không cần simulator mô phỏng đúng thời
+điểm. Việc này khả thi và KHÔNG ảnh hưởng số liệu mô phỏng hiện có.
+
+### Đã làm
+
+`_add_overflow_to_core(grid, actions, path, core)` (`bot/planner.py`): sau
+khi `_route()` nối xong producer (drill than) -> consumer (generator) bằng
+conveyor thường, "nâng cấp" Ô CUỐI (chạm thẳng consumer) thành
+`overflow-gate` (giữ nguyên rotation, vẫn ưu tiên đường thẳng 100% như
+trước -- xem `_trace_branching` case `overflow-gate`), rồi thử rẽ thêm 1
+nhánh từ 1 trong 2 cạnh VUÔNG GÓC của nó về core. KHÔNG BẮT BUỘC -- nếu
+`path` rỗng (producer đã chạm thẳng consumer, không có ô belt nào để nâng
+cấp) hoặc không tìm được chỗ rẽ/đường tới core, bỏ qua ÊM, không raise lỗi.
+
+Wire vào nhánh `"generator"` TRỰC TIẾP của `plan_build()` (lệnh "xây máy
+phát điện" rõ ràng).
+
+### Bug thật phát hiện khi thử áp dụng RỘNG hơn (verify bằng debug script trước khi quyết định phạm vi)
+
+Lúc đầu wire CẢ vào `_ensure_powered()` (hàm dùng chung cho RẤT NHIỀU ngữ
+cảnh: drill/pump/factory/generator-cluster/cả bên trong `filter_split` khi
+tự xây factory cần điện) -- chạy full regression phát hiện **3 demo cũ vỡ**
+(`bot/split_command_demo.py`, `bot/llm_split_demo.py` báo lỗi "không tìm
+được đường belt (nhánh rẽ)"; `bot/power_plant_build_demo.py` lỗi KeyError
+do assertion cũ giả định MỌI action đều có key `"building"`, không đúng
+nữa vì giờ có thêm action `"remove"`). Debug kỹ (in toàn bộ building trên
+map, truy vết từng bước `plan_filter_split`) xác nhận: overflow-gate +
+nhánh rẽ về core được `_ensure_powered()` tự thêm cho generator PHỤ (xây
+để cấp điện cho silicon-smelter bên trong `filter_split`) đã VÔ TÌNH chiếm
+đúng hướng mà sorter của `filter_split` cần để tự nối nhánh RIÊNG của nó
+tới core -- 2 lệnh khác nhau tranh chấp cùng 1 "cửa" vào core. Thử mở rộng
+map (30x20 -> 45x30) KHÔNG giải quyết được (không phải vấn đề thiếu chỗ
+đơn thuần, mà là 2 nhánh cùng nhắm đúng 1 hướng tiếp cận).
+
+Quyết định: **thu hẹp phạm vi lại, KHÔNG wire vào `_ensure_powered()`**,
+chỉ giữ ở nhánh `"generator"` trực tiếp (ít lồng ghép, rủi ro tranh chấp
+thấp hơn hẳn) -- an toàn hơn triển khai rộng mà gây lỗi ở nơi khác. Sửa
+riêng `power_plant_build_demo.py`'s assertion dùng `a.get("building")`
+thay vì `a["building"]` (đúng, không phụ thuộc scope overflow-gate).
+
+### Test
+
+`bot/overflow_to_core_demo.py` (4 kịch bản): overflow-gate được thêm đúng 1
+cái cho lệnh xây generator; overflow-gate quay mặt thẳng ĐÚNG vào generator
+(verify tính toán từ rotation, không chỉ tin suông); nhánh rẽ THẬT SỰ dẫn
+tới core (tự đi theo chuỗi belt từ nhánh rẽ, xác nhận chạm footprint core,
+không phải belt cụt); số liệu mô phỏng (`power_production`) KHÔNG đổi so
+với tính tay theo công thức generator gốc (xác nhận overflow-gate không
+làm sai lệch gì, chỉ thêm hạ tầng an toàn cho gameplay thật).
+
+Regression: 36/36 script pass (32 cũ + `bot/overflow_to_core_demo.py` mới,
+sau khi thu hẹp phạm vi và sửa `power_plant_build_demo.py`).
+
+### Giới hạn (chưa xử lý, ghi rõ)
+
+- **CHỈ áp dụng cho nhánh `"generator"` trực tiếp** của `plan_build()` --
+  generator được tự xây làm PHỤ (bên trong `_ensure_powered()`, vd để cấp
+  điện cho 1 drill/factory/cụm khác) KHÔNG có overflow-gate/nhánh an toàn
+  này, do rủi ro tranh chấp không gian với lệnh khác đã verify thật ở
+  trên. Đây là phần lớn các trường hợp generator được xây trong thực tế sử
+  dụng (hầu hết generator được tạo TỰ ĐỘNG qua `_ensure_powered`, không
+  phải qua lệnh "xây máy phát điện" trực tiếp).
+- Chỉ rẽ về **core** -- không hỗ trợ rẽ về building khác (vd container lưu
+  trữ) như user có thể muốn trong tương lai.
+- `plan_build_generator_cluster()` (cụm N generator) CHƯA có overflow-gate
+  an toàn cho lane than dùng chung -- khác kiến trúc hẳn (router lane, không
+  phải conveyor thẳng vào 1 generator), cần thiết kế riêng nếu muốn thêm.

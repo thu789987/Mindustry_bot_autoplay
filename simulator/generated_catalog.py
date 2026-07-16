@@ -3,7 +3,7 @@
 Nguồn: Anuken/Mindustry (master, reference/*.java).
 Bỏ qua 12 block không parse được (xem SKIPPED cuối file) -- không
 phải bug, do cơ chế không khớp pattern hỗ trợ hoặc cố ý chưa model.
-190 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
+188 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
 recipe/rate, planner từ chối đặt thay vì đoán. Xem NEXT_STEPS.md.
 """
 
@@ -61,7 +61,9 @@ GENERATED_BUILDINGS = {
     "large-cliff-crusher": BuildingType("large-cliff-crusher", size=3, kind="wall-crafter", drill_time=48.0, wall_attribute="sand", wall_output="sand", power_input=60.0),
     "water-extractor": BuildingType("water-extractor", size=2, kind="solid-pump", pump_amount=0.11, solid_pump_attribute="water", solid_pump_liquid="water", power_input=90.0),
     "armored-conveyor": BuildingType("armored-conveyor", size=1, kind="belt", base_rate=10.0),
+    "armored-duct": BuildingType("armored-duct", size=1, kind="belt", base_rate=15.0),
     "conveyor": BuildingType("conveyor", size=1, kind="belt", base_rate=6.5),
+    "duct": BuildingType("duct", size=1, kind="belt", base_rate=15.0),
     "titanium-conveyor": BuildingType("titanium-conveyor", size=1, kind="belt", base_rate=10.0),
     "blast-mixer": BuildingType("blast-mixer", size=2, kind="factory", recipe=Recipe(craft_time=1.3333333333333333, inputs={"pyratite": 1.0, "spore-pod": 1.0}, liquid_inputs={}, output_item="blast-compound", output_amount=1), power_input=24.0),
     "graphite-press": BuildingType("graphite-press", size=2, kind="factory", recipe=Recipe(craft_time=1.5, inputs={"coal": 2.0}, liquid_inputs={}, output_item="graphite", output_amount=1), power_input=0.0),
@@ -129,7 +131,6 @@ GENERATED_OTHER = {
     "afflict": BuildingType("afflict", size=4, kind="turret", category="turret"),
     "air-factory": BuildingType("air-factory", size=3, kind="units", category="units"),
     "arc": BuildingType("arc", size=1, kind="turret", category="turret"),
-    "armored-duct": BuildingType("armored-duct", size=1, kind="distribution", category="distribution"),
     "atmospheric-concentrator": BuildingType("atmospheric-concentrator", size=3, kind="crafting", category="crafting"),
     "basic-assembler-module": BuildingType("basic-assembler-module", size=5, kind="units", category="units"),
     "battery": BuildingType("battery", size=1, kind="power", category="power"),
@@ -169,7 +170,6 @@ GENERATED_OTHER = {
     "disperse": BuildingType("disperse", size=4, kind="turret", category="turret"),
     "door": BuildingType("door", size=1, kind="defense", category="defense"),
     "door-large": BuildingType("door-large", size=2, kind="defense", category="defense"),
-    "duct": BuildingType("duct", size=1, kind="distribution", category="distribution"),
     "duo": BuildingType("duo", size=1, kind="turret", category="turret"),
     "electric-heater": BuildingType("electric-heater", size=2, kind="crafting", category="crafting"),
     "electrolyzer": BuildingType("electrolyzer", size=3, kind="crafting", category="crafting"),

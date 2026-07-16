@@ -54,6 +54,14 @@ WALL_CRAFTER_CLASSES = {"WallCrafter"}
 # _solid_pump_output_rate.
 SOLID_PUMP_CLASSES = {"SolidPump"}
 BELT_CLASSES = {"Conveyor", "ArmoredConveyor"}
+# Duct.java (duct/armored-duct, băng chuyền item riêng Erekir): KHÁC hẳn
+# Conveyor.displayedSpeed (đã sẵn đơn vị items/giây) -- field thật là
+# `speed` (số tick/lần chuyển), quy đổi ra items/giây bằng CHÍNH công thức
+# game hiển thị cho người chơi: `stats.add(Stat.itemsMoved, 60f / speed,
+# StatUnit.itemsSecond)` (xem Duct.java thật, dòng 61). Từng bị bỏ sót
+# hoàn toàn (không nằm trong BELT_CLASSES lẫn KNOWN_UNMODELED) tới khi user
+# hỏi "bot có nhận diện hết Transport chưa" mới phát hiện ra.
+DUCT_CLASSES = {"Duct"}
 CRAFTER_CLASSES = {"GenericCrafter"}
 SORTER_CLASSES = {"Sorter"}
 PUMP_CLASSES = {"Pump"}
@@ -122,7 +130,7 @@ GENERATOR_CLASSES = {"ConsumeGenerator"}
 # bán kính laserRange (số ô) -- xem sim.py phần dựng mạng điện.
 POWER_NODE_CLASSES = {"PowerNode"}
 HANDLED_CLASSES = (
-    DRILL_CLASSES | BEAM_DRILL_CLASSES | WALL_CRAFTER_CLASSES | SOLID_PUMP_CLASSES | BELT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
+    DRILL_CLASSES | BEAM_DRILL_CLASSES | WALL_CRAFTER_CLASSES | SOLID_PUMP_CLASSES | BELT_CLASSES | DUCT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
     | PUMP_CLASSES | CONDUIT_CLASSES | ROUTER_CLASSES | JUNCTION_CLASSES
     | OVERFLOW_CLASSES | BRIDGE_CLASSES | MASS_DRIVER_CLASSES | UNLOADER_CLASSES
     | STORAGE_CLASSES | GENERATOR_CLASSES | POWER_NODE_CLASSES
@@ -419,6 +427,20 @@ def main():
                 skipped.append((blockname, classname, "thiếu displayedSpeed"))
                 continue
             belts.append({"name": blockname, "size": size, "base_rate": speed})
+            handled_names.add(blockname)
+
+        elif classname in DUCT_CLASSES:
+            # Duct.java KHÔNG có displayedSpeed -- field thật là `speed` (số
+            # tick/lần chuyển, default class 5f), quy đổi ra items/giây bằng
+            # ĐÚNG công thức game hiển thị cho người chơi (Duct.java thật,
+            # Stat.itemsMoved): rate = 60/speed. Gộp chung list `belts`
+            # (kind="belt") vì cơ chế belt-tracing trong sim.py không phân
+            # biệt nguồn gốc class, chỉ cần đúng base_rate.
+            raw_speed = field_float(body, "speed", default=5.0)
+            if raw_speed is None or raw_speed <= 0:
+                skipped.append((blockname, classname, "thiếu/sai field speed"))
+                continue
+            belts.append({"name": blockname, "size": size, "base_rate": TICKS_PER_SECOND / raw_speed})
             handled_names.add(blockname)
 
         elif classname in CRAFTER_CLASSES:
