@@ -1,9 +1,9 @@
 """TỰ ĐỘNG SINH bởi tools/generate_catalog.py -- đừng sửa tay, chạy lại script.
 
 Nguồn: Anuken/Mindustry (master, reference/*.java).
-Bỏ qua 12 block không parse được (xem SKIPPED cuối file) -- không
+Bỏ qua 9 block không parse được (xem SKIPPED cuối file) -- không
 phải bug, do cơ chế không khớp pattern hỗ trợ hoặc cố ý chưa model.
-188 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
+176 block khác chỉ lưu tên+category (GENERATED_OTHER) -- chưa có
 recipe/rate, planner từ chối đặt thay vì đoán. Xem NEXT_STEPS.md.
 """
 
@@ -116,11 +116,23 @@ GENERATED_BUILDINGS = {
     "reinforced-container": BuildingType("reinforced-container", size=2, kind="storage"),
     "reinforced-vault": BuildingType("reinforced-vault", size=3, kind="storage"),
     "vault": BuildingType("vault", size=3, kind="storage"),
-    "combustion-generator": BuildingType("combustion-generator", size=1, kind="generator", power_production=1.0, item_duration=120.0, min_flammability=0.2, generator_liquid_inputs={}),
-    "steam-generator": BuildingType("steam-generator", size=2, kind="generator", power_production=5.5, item_duration=90.0, min_flammability=0.2, generator_liquid_inputs={"water": 9.0}),
+    "chemical-combustion-chamber": BuildingType("chemical-combustion-chamber", size=3, kind="generator", power_production=9.166666666666666, item_duration=0.0, min_flammability=0.0, generator_liquid_inputs={"ozone": 2.0, "arkycite": 40.0}, generator_item=None, generator_item_amount=1.0, generator_passive=False, generator_liquid_only=True, power_input=0.0),
+    "combustion-generator": BuildingType("combustion-generator", size=1, kind="generator", power_production=1.0, item_duration=120.0, min_flammability=0.2, generator_liquid_inputs={}, generator_item=None, generator_item_amount=1.0, generator_passive=False, generator_liquid_only=False, power_input=0.0),
+    "differential-generator": BuildingType("differential-generator", size=3, kind="generator", power_production=18.0, item_duration=220.0, min_flammability=0.0, generator_liquid_inputs={"cryofluid": 22.0}, generator_item="pyratite", generator_item_amount=1.0, generator_passive=False, generator_liquid_only=False, power_input=0.0),
+    "impact-reactor": BuildingType("impact-reactor", size=4, kind="generator", power_production=130.0, item_duration=140.0, min_flammability=0.0, generator_liquid_inputs={"cryofluid": 35.0}, generator_item="blast-compound", generator_item_amount=1.0, generator_passive=False, generator_liquid_only=False, power_input=1500.0),
+    "pyrolysis-generator": BuildingType("pyrolysis-generator", size=3, kind="generator", power_production=23.333333333333332, item_duration=0.0, min_flammability=0.0, generator_liquid_inputs={"slag": 20.0, "arkycite": 40.0}, generator_item=None, generator_item_amount=1.0, generator_passive=False, generator_liquid_only=True, power_input=0.0),
+    "solar-panel": BuildingType("solar-panel", size=1, kind="generator", power_production=0.12, item_duration=0.0, min_flammability=0.0, generator_liquid_inputs={}, generator_item=None, generator_item_amount=1.0, generator_passive=True, generator_liquid_only=False, power_input=0.0),
+    "solar-panel-large": BuildingType("solar-panel-large", size=3, kind="generator", power_production=1.6, item_duration=0.0, min_flammability=0.0, generator_liquid_inputs={}, generator_item=None, generator_item_amount=1.0, generator_passive=True, generator_liquid_only=False, power_input=0.0),
+    "steam-generator": BuildingType("steam-generator", size=2, kind="generator", power_production=5.5, item_duration=90.0, min_flammability=0.2, generator_liquid_inputs={"water": 9.0}, generator_item=None, generator_item_amount=1.0, generator_passive=False, generator_liquid_only=False, power_input=0.0),
+    "thorium-reactor": BuildingType("thorium-reactor", size=3, kind="generator", power_production=15.0, item_duration=360.0, min_flammability=0.0, generator_liquid_inputs={}, generator_item="thorium", generator_item_amount=1.0, generator_passive=False, generator_liquid_only=False, power_input=0.0),
+    "beam-link": BuildingType("beam-link", size=3, kind="power-node", power_range=500.0),
+    "beam-node": BuildingType("beam-node", size=1, kind="beam-node", power_range=10.0),
+    "beam-tower": BuildingType("beam-tower", size=3, kind="beam-node", power_range=23.0),
     "power-node": BuildingType("power-node", size=1, kind="power-node", power_range=6.0),
     "power-node-large": BuildingType("power-node-large", size=2, kind="power-node", power_range=15.0),
     "surge-tower": BuildingType("surge-tower", size=2, kind="power-node", power_range=40.0),
+    "battery": BuildingType("battery", size=1, kind="battery", battery_capacity=4000.0),
+    "battery-large": BuildingType("battery-large", size=3, kind="battery", battery_capacity=50000.0),
 }
 
 # Chỉ có tên+category+size, CHƯA có recipe/rate -- planner từ chối đặt
@@ -133,11 +145,6 @@ GENERATED_OTHER = {
     "arc": BuildingType("arc", size=1, kind="turret", category="turret"),
     "atmospheric-concentrator": BuildingType("atmospheric-concentrator", size=3, kind="crafting", category="crafting"),
     "basic-assembler-module": BuildingType("basic-assembler-module", size=5, kind="units", category="units"),
-    "battery": BuildingType("battery", size=1, kind="power", category="power"),
-    "battery-large": BuildingType("battery-large", size=3, kind="power", category="power"),
-    "beam-link": BuildingType("beam-link", size=3, kind="power", category="power"),
-    "beam-node": BuildingType("beam-node", size=1, kind="power", category="power"),
-    "beam-tower": BuildingType("beam-tower", size=3, kind="power", category="power"),
     "beryllium-wall": BuildingType("beryllium-wall", size=1, kind="defense", category="defense"),
     "beryllium-wall-large": BuildingType("beryllium-wall-large", size=2, kind="defense", category="defense"),
     "blast-door": BuildingType("blast-door", size=2, kind="defense", category="defense"),
@@ -147,7 +154,6 @@ GENERATED_OTHER = {
     "carbide-crucible": BuildingType("carbide-crucible", size=3, kind="crafting", category="crafting"),
     "carbide-wall": BuildingType("carbide-wall", size=1, kind="defense", category="defense"),
     "carbide-wall-large": BuildingType("carbide-wall-large", size=2, kind="defense", category="defense"),
-    "chemical-combustion-chamber": BuildingType("chemical-combustion-chamber", size=3, kind="power", category="power"),
     "coal-centrifuge": BuildingType("coal-centrifuge", size=2, kind="crafting", category="crafting"),
     "constructor": BuildingType("constructor", size=3, kind="units", category="units"),
     "copper-wall": BuildingType("copper-wall", size=1, kind="defense", category="defense"),
@@ -163,7 +169,6 @@ GENERATED_OTHER = {
     "cyanogen-synthesizer": BuildingType("cyanogen-synthesizer", size=3, kind="crafting", category="crafting"),
     "cyclone": BuildingType("cyclone", size=3, kind="turret", category="turret"),
     "deconstructor": BuildingType("deconstructor", size=5, kind="units", category="units"),
-    "differential-generator": BuildingType("differential-generator", size=3, kind="power", category="power"),
     "diffuse": BuildingType("diffuse", size=3, kind="turret", category="turret"),
     "diode": BuildingType("diode", size=1, kind="power", category="power"),
     "disassembler": BuildingType("disassembler", size=3, kind="crafting", category="crafting"),
@@ -186,7 +191,6 @@ GENERATED_OTHER = {
     "heat-source": BuildingType("heat-source", size=1, kind="crafting", category="crafting"),
     "hyper-processor": BuildingType("hyper-processor", size=3, kind="logic", category="logic"),
     "illuminator": BuildingType("illuminator", size=1, kind="effect", category="effect"),
-    "impact-reactor": BuildingType("impact-reactor", size=4, kind="power", category="power"),
     "incinerator": BuildingType("incinerator", size=1, kind="crafting", category="crafting"),
     "interplanetary-accelerator": BuildingType("interplanetary-accelerator", size=7, kind="effect", category="effect"),
     "item-source": BuildingType("item-source", size=1, kind="distribution", category="distribution"),
@@ -241,7 +245,6 @@ GENERATED_OTHER = {
     "power-source": BuildingType("power-source", size=1, kind="power", category="power"),
     "power-void": BuildingType("power-void", size=1, kind="power", category="power"),
     "prime-refabricator": BuildingType("prime-refabricator", size=5, kind="units", category="units"),
-    "pyrolysis-generator": BuildingType("pyrolysis-generator", size=3, kind="power", category="power"),
     "radar": BuildingType("radar", size=1, kind="effect", category="effect"),
     "regen-projector": BuildingType("regen-projector", size=3, kind="effect", category="effect"),
     "reinforced-message": BuildingType("reinforced-message", size=1, kind="logic", category="logic"),
@@ -277,8 +280,6 @@ GENERATED_OTHER = {
     "small-deconstructor": BuildingType("small-deconstructor", size=3, kind="units", category="units"),
     "small-heat-redirector": BuildingType("small-heat-redirector", size=2, kind="crafting", category="crafting"),
     "smite": BuildingType("smite", size=5, kind="turret", category="turret"),
-    "solar-panel": BuildingType("solar-panel", size=1, kind="power", category="power"),
-    "solar-panel-large": BuildingType("solar-panel-large", size=3, kind="power", category="power"),
     "spectre": BuildingType("spectre", size=4, kind="turret", category="turret"),
     "spore-press": BuildingType("spore-press", size=2, kind="crafting", category="crafting"),
     "sublimate": BuildingType("sublimate", size=3, kind="turret", category="turret"),
@@ -293,7 +294,6 @@ GENERATED_OTHER = {
     "tank-refabricator": BuildingType("tank-refabricator", size=3, kind="units", category="units"),
     "tetrative-reconstructor": BuildingType("tetrative-reconstructor", size=9, kind="units", category="units"),
     "thermal-generator": BuildingType("thermal-generator", size=2, kind="power", category="power"),
-    "thorium-reactor": BuildingType("thorium-reactor", size=3, kind="power", category="power"),
     "thorium-wall": BuildingType("thorium-wall", size=1, kind="defense", category="defense"),
     "thorium-wall-large": BuildingType("thorium-wall-large", size=2, kind="defense", category="defense"),
     "thruster": BuildingType("thruster", size=4, kind="defense", category="defense"),
@@ -323,10 +323,7 @@ SKIPPED = [
     ("coal-centrifuge", "GenericCrafter", "thiếu/không parse được input item (có thể chỉ dùng liquid/power)"),
     ("electrolyzer", "GenericCrafter", "thiếu/không parse được outputItem"),
     ("reinforced-pump", "Pump", "pump tự tiêu thụ liquid (vd reinforced-pump) -- chưa model"),
-    ("differential-generator", "ConsumeGenerator", "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"),
-    ("rtg-generator", "ConsumeGenerator", "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"),
-    ("chemical-combustion-chamber", "ConsumeGenerator", "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"),
-    ("pyrolysis-generator", "ConsumeGenerator", "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"),
+    ("rtg-generator", "ConsumeGenerator", "không dùng ConsumeItemFlammable, không tìm được consumeItem/consumeLiquid nhận diện được -- cơ chế khác, chưa model"),
     ("plastanium-conveyor", "StackConveyor", "cơ chế xếp chồng nhiều item/ô, khác hẳn Conveyor thường"),
     ("surge-conveyor", "StackConveyor", "cơ chế xếp chồng nhiều item/ô, khác hẳn Conveyor thường"),
 ]

@@ -42,7 +42,14 @@ DEFAULT_MODEL = "qwen2.5-7b-instruct"  # sửa cho khớp tên model bạn load 
 # plan_split_command/plan_filter_split_command trong bot/planner.py) --
 # không cấp tên turret/power/logic/unit/... vào ngữ cảnh model để tránh nó
 # "vẽ" ra lệnh bot không thực thi được.
-SUPPORTED_KINDS = {"drill", "belt", "factory", "pump", "sorter", "router", "generator", "power-node"}
+#
+# Bug thật user tự phát hiện: set này HARDCODE tay, không tự đồng bộ theo
+# CATALOG -- audit "Power Blocks" thêm kind="battery"/"beam-node" (build
+# trực tiếp được qua plan_build(), xem NEXT_STEPS.md) nhưng quên cập nhật
+# set này, khiến model LM Studio KHÔNG BAO GIỜ biết 2 loại đó tồn tại (dù
+# dict parser -- bot/command_parser.py -- đã nhận diện được) dù kiến trúc
+# hoàn toàn cho phép, chỉ là thiếu 1 dòng.
+SUPPORTED_KINDS = {"drill", "belt", "factory", "pump", "sorter", "router", "generator", "power-node", "battery", "beam-node"}
 
 
 def _valid_building_names():

@@ -122,6 +122,39 @@ class BuildingType:
     # dùng nguyên mặc định này, không ghi đè); blast-drill ghi đè riêng thành
     # 1.8f (comment thật trong Blocks.java: "more than the laser drill").
     boost_intensity: float = 1.6
+    # kind="generator" mở rộng (audit "Power Blocks", ConsumeGenerator.java
+    # dùng consumeItem(Items.X) CỐ ĐỊNH -- vd differential-generator/
+    # chemical-combustion-chamber/pyrolysis-generator/thorium-reactor
+    # (NuclearReactor.java)/impact-reactor (ImpactReactor.java) -- KHÁC hẳn
+    # combustion-generator/steam-generator (đốt BẤT KỲ item đủ flammability,
+    # xem min_flammability ở trên). None = dùng cơ chế flammability cũ (không
+    # đổi hành vi 2 building hiện có). generator_item_amount: số item cố định
+    # cần MỖI chu kỳ (item_duration) -- hầu hết = 1.0 (consumeItem(X) mặc
+    # định), xem sim.py _generator_power_rate.
+    generator_item: Optional[str] = None
+    generator_item_amount: float = 1.0
+    # kind="generator", chemical-combustion-chamber/pyrolysis-generator: CHỈ
+    # dùng consumeLiquids(...), KHÔNG có consumeItem() nào cả -- khác hẳn
+    # steam-generator/thorium-reactor (item + liquid ĐI KÈM NHAU theo 1 chu
+    # kỳ item_duration chung). Không có item -> không có khái niệm "chu kỳ"
+    # thật để giới hạn tốc độ, hiệu suất chỉ phụ thuộc liquid có ĐỦ LƯU
+    # LƯỢNG LIÊN TỤC hay không (xem sim.py _generator_power_rate) -- generator_liquid_inputs
+    # cho building này lưu trực tiếp đơn vị "cần/giây" (không nhân theo chu
+    # kỳ như trường hợp có item).
+    generator_liquid_only: bool = False
+    # kind="generator", SolarGenerator.java (solar-panel/solar-panel-large):
+    # ra điện THỤ ĐỘNG, không cần item/liquid gì -- productionEfficiency thật
+    # phụ thuộc ánh sáng môi trường + state.rules.solarMultiplier (không mô
+    # phỏng ngày/đêm), xấp xỉ LUÔN đủ nắng (hiệu suất=1.0 cố định) -- xem
+    # NEXT_STEPS.md mục Power Blocks cho giới hạn này.
+    generator_passive: bool = False
+    # kind="battery" (Battery.java: battery/battery-large) -- LƯU TRỮ điện,
+    # không sản xuất/tiêu thụ ròng liên tục (khác hẳn generator/power_input).
+    # Simulator này tính THÔNG LƯỢNG TRUNG BÌNH ổn định, không mô phỏng theo
+    # tick -- battery không đổi kết quả trung bình dài hạn (xem
+    # _build_power_networks docstring), field này chỉ để lưu thông số thật
+    # (Battery.java consumePowerBuffered()), KHÔNG dùng trong tính toán rate.
+    battery_capacity: float = 0.0
 
 
 # core không phải Drill/Conveyor/GenericCrafter nên tools/generate_catalog.py

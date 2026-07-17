@@ -121,19 +121,38 @@ STORAGE_CLASSES = {"StorageBlock"}
 # item nào đủ flammability (ConsumeItemFlammable.java: filter theo
 # item.flammability >= minFlammability, hiệu suất phát điện = flammability
 # của item đó) -- khác hẳn factory thường (tiêu thụ 1 item CỐ ĐỊNH, số lượng
-# cố định). Chỉ nhận block dùng đúng pattern này (kiểm tra
-# "ConsumeItemFlammable" trong thân); generator khác cơ chế (vd
-# thermal-generator dùng nhiệt độ tile, differential-generator dùng chênh
-# lệch nhiệt độ 2 liquid) rơi vào GENERATED_OTHER, không đoán bừa.
-GENERATOR_CLASSES = {"ConsumeGenerator"}
+# cố định). NuclearReactor.java (thorium-reactor)/ImpactReactor.java
+# (impact-reactor) cũng dùng consumeItem(X) CỐ ĐỊNH (không phải
+# ConsumeItemFlammable) -- gộp chung nhánh xử lý (đọc thêm tại nhánh elif
+# trong extract_blocks, phân biệt fixed_item/liquid_only ngay trong thân xử
+# lý thay vì tách class riêng). ThermalGenerator.java (thermal-generator/
+# turbine-condenser, dựa Attribute.heat -- CHƯA có "heat" trong Tile/state
+# schema, xem NEXT_STEPS.md) và VariableReactor/HeaterGenerator.java
+# (flux-reactor/neoplasia-reactor, cơ chế heat-instability/biến thiên phức
+# tạp hơn hẳn) vẫn rơi vào GENERATED_OTHER, không đoán bừa.
+GENERATOR_CLASSES = {"ConsumeGenerator", "NuclearReactor", "ImpactReactor"}
+# SolarGenerator.java (solar-panel/solar-panel-large): ra điện THỤ ĐỘNG,
+# không consume gì -- tách riêng khỏi GENERATOR_CLASSES vì không có bất kỳ
+# consumeItem/consumeLiquid nào để dò (nhánh xử lý hoàn toàn khác).
+SOLAR_GENERATOR_CLASSES = {"SolarGenerator"}
 # PowerNode.java: không sản xuất/tiêu thụ điện, chỉ TRUYỀN không dây trong
-# bán kính laserRange (số ô) -- xem sim.py phần dựng mạng điện.
-POWER_NODE_CLASSES = {"PowerNode"}
+# bán kính laserRange (số ô, hình tròn) -- xem sim.py phần dựng mạng điện.
+# LongPowerNode.java kế thừa THẲNG PowerNode (chỉ khác cosmetic, field
+# laserRange dùng y hệt) -- gộp chung, xem beam-link.
+POWER_NODE_CLASSES = {"PowerNode", "LongPowerNode"}
+# BeamNode.java (beam-node/beam-tower): khác PowerNode -- chỉ nối THẲNG
+# HÀNG theo 4 hướng Đông/Tây/Nam/Bắc trong tầm `range`, không toả tròn --
+# xem sim.py _power_linked nhánh beam-node.
+BEAM_NODE_CLASSES = {"BeamNode"}
+# Battery.java (battery/battery-large): lưu trữ điện, không sản xuất/tiêu
+# thụ ròng liên tục -- xem buildings.py battery_capacity.
+BATTERY_CLASSES = {"Battery"}
 HANDLED_CLASSES = (
     DRILL_CLASSES | BEAM_DRILL_CLASSES | WALL_CRAFTER_CLASSES | SOLID_PUMP_CLASSES | BELT_CLASSES | DUCT_CLASSES | CRAFTER_CLASSES | SORTER_CLASSES
     | PUMP_CLASSES | CONDUIT_CLASSES | ROUTER_CLASSES | JUNCTION_CLASSES
     | OVERFLOW_CLASSES | BRIDGE_CLASSES | MASS_DRIVER_CLASSES | UNLOADER_CLASSES
-    | STORAGE_CLASSES | GENERATOR_CLASSES | POWER_NODE_CLASSES
+    | STORAGE_CLASSES | GENERATOR_CLASSES | SOLAR_GENERATOR_CLASSES | POWER_NODE_CLASSES
+    | BEAM_NODE_CLASSES | BATTERY_CLASSES
 )
 
 # Class biết tồn tại, cố ý không model -- lý do cụ thể ghi trong SKIPPED khi gặp
@@ -257,18 +276,34 @@ def parse_consume(body, item_field_to_name):
 
 
 def parse_consume_liquid(body, liquid_field_to_name, craft_time_ticks):
-    """consumeLiquid() là tốc độ LIÊN TỤC (amount/tick), khác consumeItem
-    (amount/1 chu kỳ craft). Quy đổi sang "amount/chu kỳ" bằng
-    amount_per_tick * craft_time_ticks để dùng chung công thức min() với
-    item input trong sim.py -- tương đương nhau ở trạng thái ổn định (đây
-    là thứ simulator tính), không phải xấp xỉ."""
+    """consumeLiquid()/consumeLiquids() là tốc độ LIÊN TỤC (amount/tick),
+    khác consumeItem (amount/1 chu kỳ craft). Quy đổi sang "amount/chu kỳ"
+    bằng amount_per_tick * craft_time_ticks để dùng chung công thức min()
+    với item input trong sim.py -- tương đương nhau ở trạng thái ổn định
+    (đây là thứ simulator tính), không phải xấp xỉ.
+
+    Nhận CẢ 2 dạng thật: consumeLiquid(Liquids.X, rate) (1 liquid, vd
+    steam-generator/thorium-reactor/differential-generator) VÀ
+    consumeLiquids(LiquidStack.with(Liquids.X, r1, Liquids.Y, r2)) (nhiều
+    liquid CÙNG LÚC, vd chemical-combustion-chamber/pyrolysis-generator) --
+    trước đây chỉ nhận dạng đầu, bỏ sót hẳn dạng nhiều liquid."""
+    result = {}
     m = re.search(rf"consumeLiquid\(Liquids\.(\w+),\s*({_EXPR})\)", body)
-    if not m:
-        return {}
-    liquid_ref, amount_per_tick = m.group(1), _eval_expr(m.group(2))
-    if liquid_ref not in liquid_field_to_name:
-        return {}
-    return {liquid_field_to_name[liquid_ref][0]: amount_per_tick * craft_time_ticks}
+    if m:
+        liquid_ref, amount_per_tick = m.group(1), _eval_expr(m.group(2))
+        if liquid_ref in liquid_field_to_name:
+            result[liquid_field_to_name[liquid_ref][0]] = amount_per_tick * craft_time_ticks
+
+    m = re.search(r"consumeLiquids\(LiquidStack\.with\(([^)]*)\)\)", body)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        for i in range(0, len(parts) - 1, 2):
+            liquid_ref = parts[i].removeprefix("Liquids.")
+            amount = parts[i + 1]
+            if liquid_ref in liquid_field_to_name:
+                result[liquid_field_to_name[liquid_ref][0]] = _eval_expr(amount) * craft_time_ticks
+
+    return result
 
 
 def parse_output(body, item_field_to_name):
@@ -342,6 +377,7 @@ def main():
     drills, belts, factories, sorters, pumps, conduits, routers, skipped = [], [], [], [], [], [], [], []
     junctions, overflow_gates, bridges, mass_drivers, unloaders, storages = [], [], [], [], [], []
     generators, power_nodes, beam_drills, wall_crafters, solid_pumps = [], [], [], [], []
+    batteries = []
     handled_names = set()
 
     for varname, classname, blockname, body in handled_blocks:
@@ -522,25 +558,111 @@ def main():
             storages.append({"name": blockname, "size": size})
             handled_names.add(blockname)
 
-        elif classname in GENERATOR_CLASSES:
-            if "ConsumeItemFlammable" not in body:
-                skipped.append((blockname, classname, "không dùng ConsumeItemFlammable (vd dựa nhiệt độ/tile) -- cơ chế khác, chưa model"))
-                continue
+        elif classname in SOLAR_GENERATOR_CLASSES:
+            # SolarGenerator.java (solar-panel/solar-panel-large): ra điện
+            # THỤ ĐỘNG, không consume gì cả -- xem sim.py _generator_power_rate
+            # nhánh generator_passive (xấp xỉ LUÔN đủ nắng, không mô phỏng
+            # ngày/đêm, xem NEXT_STEPS.md).
             power_production = field_float(body, "powerProduction", default=0.0)
-            item_duration = field_float(body, "itemDuration", default=120.0)
-            m = re.search(rf"new ConsumeItemFlammable\(({_EXPR})\)", body)
-            min_flammability = _eval_expr(m.group(1)) if m else 0.2  # 0.2 = default ctor, xem ConsumeItemFlammable.java
-            liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, item_duration)
             generators.append({
                 "name": blockname, "size": size, "power_production": power_production,
-                "item_duration": item_duration, "min_flammability": min_flammability,
-                "liquid_inputs": liquid_inputs,
+                "item_duration": 0.0, "min_flammability": 0.0, "liquid_inputs": {},
+                "passive": True, "fixed_item": None, "fixed_item_amount": 1.0,
+                "liquid_only": False, "power_input": 0.0,
             })
             handled_names.add(blockname)
 
+        elif classname in GENERATOR_CLASSES:
+            power_production = field_float(body, "powerProduction", default=0.0)
+            item_duration = field_float(body, "itemDuration", default=120.0)
+            # ImpactReactor.java: consumePower(25f) -- VỪA sản xuất VỪA tiêu
+            # thụ điện (net dương, powerProduction > power_input thật) --
+            # sim.py's _power_capable/_power_satisfaction đã tổng quát sẵn
+            # cho trường hợp 1 building vừa "generator" vừa power_input>0,
+            # không cần đổi gì thêm ở đó.
+            power_input = parse_power_input(body)
+
+            if "ConsumeItemFlammable" in body:
+                # Cơ chế CŨ (combustion-generator/steam-generator): đốt BẤT
+                # KỲ item đủ flammability -- không đổi hành vi.
+                m = re.search(rf"new ConsumeItemFlammable\(({_EXPR})\)", body)
+                min_flammability = _eval_expr(m.group(1)) if m else 0.2  # 0.2 = default ctor
+                liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, item_duration)
+                generators.append({
+                    "name": blockname, "size": size, "power_production": power_production,
+                    "item_duration": item_duration, "min_flammability": min_flammability,
+                    "liquid_inputs": liquid_inputs, "passive": False, "fixed_item": None,
+                    "fixed_item_amount": 1.0, "liquid_only": False, "power_input": power_input,
+                })
+                handled_names.add(blockname)
+                continue
+
+            # consumeItem(Items.X) KHÔNG có amount đi kèm (ngầm định 1) --
+            # khác parse_consume() (đòi hỏi consumeItems(with(...)) hoặc
+            # consumeItem(Items.X, amount) CÓ amount rõ) -- vd
+            # differential-generator (pyratite), thorium-reactor (thorium),
+            # impact-reactor (blast-compound). Coi đây là item CỐ ĐỊNH DUY
+            # NHẤT, khác hẳn "bất kỳ item đủ flammability" ở trên -- xem
+            # sim.py _generator_power_rate nhánh generator_item.
+            m_item = re.search(r"consumeItem\(Items\.(\w+)\)(?!\s*,)", body)
+            fixed_item = None
+            if m_item and m_item.group(1) in item_field_to_name:
+                fixed_item = item_field_to_name[m_item.group(1)][0]
+
+            if fixed_item is not None:
+                liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, item_duration)
+                generators.append({
+                    "name": blockname, "size": size, "power_production": power_production,
+                    "item_duration": item_duration, "min_flammability": 0.0,
+                    "liquid_inputs": liquid_inputs, "passive": False, "fixed_item": fixed_item,
+                    "fixed_item_amount": 1.0, "liquid_only": False, "power_input": power_input,
+                })
+                handled_names.add(blockname)
+                continue
+
+            # Không item nào cả, CHỈ consumeLiquid(s) -- vd
+            # chemical-combustion-chamber/pyrolysis-generator. Không có "chu
+            # kỳ" item để quy đổi theo -- generator_liquid_inputs lưu trực
+            # tiếp đơn vị "cần/giây" (truyền TICKS_PER_SECOND thay vì
+            # item_duration làm hệ số quy đổi, xem sim.py
+            # _generator_power_rate nhánh generator_liquid_only).
+            liquid_inputs = parse_consume_liquid(body, liquid_field_to_name, TICKS_PER_SECOND)
+            if liquid_inputs:
+                generators.append({
+                    "name": blockname, "size": size, "power_production": power_production,
+                    "item_duration": 0.0, "min_flammability": 0.0,
+                    "liquid_inputs": liquid_inputs, "passive": False, "fixed_item": None,
+                    "fixed_item_amount": 1.0, "liquid_only": True, "power_input": power_input,
+                })
+                handled_names.add(blockname)
+                continue
+
+            skipped.append((blockname, classname, "không dùng ConsumeItemFlammable, không tìm được consumeItem/consumeLiquid nhận diện được -- cơ chế khác, chưa model"))
+
         elif classname in POWER_NODE_CLASSES:
             laser_range = field_float(body, "laserRange", default=6.0)
-            power_nodes.append({"name": blockname, "size": size, "power_range": laser_range})
+            power_nodes.append({"name": blockname, "size": size, "power_range": laser_range, "kind": "power-node"})
+            handled_names.add(blockname)
+
+        elif classname in BEAM_NODE_CLASSES:
+            # BeamNode.java (beam-node/beam-tower): nối THẲNG HÀNG (4 hướng
+            # Đông/Tây/Nam/Bắc), KHÁC power-node (toả tròn laserRange) -- xem
+            # sim.py _power_linked nhánh beam-node. Lưu vào field power_range
+            # (dùng chung tên với power-node cho gọn, chỉ khác Ý NGHĨA hình
+            # học tuỳ kind).
+            beam_range = field_int(body, "range", default=5)  # default thật BeamNode.java
+            power_nodes.append({"name": blockname, "size": size, "power_range": float(beam_range), "kind": "beam-node"})
+            handled_names.add(blockname)
+
+        elif classname in BATTERY_CLASSES:
+            # Battery.java: LƯU TRỮ điện, không sản xuất/tiêu thụ ròng liên
+            # tục -- simulator này tính thông lượng TRUNG BÌNH ổn định,
+            # battery không đổi kết quả đó (xem buildings.py battery_capacity
+            # + sim.py _build_power_networks docstring). Chỉ cần nhận diện
+            # để tham gia mạng điện (kind="battery", _power_capable), không
+            # có rate nào để tính.
+            capacity = _eval_expr(re.search(rf"consumePowerBuffered\(({_EXPR})\)", body).group(1)) if re.search(rf"consumePowerBuffered\(({_EXPR})\)", body) else 0.0
+            batteries.append({"name": blockname, "size": size, "battery_capacity": capacity})
             handled_names.add(blockname)
 
     print(f"  -> drill: {len(drills)}, beam-drill: {len(beam_drills)}, wall-crafter: {len(wall_crafters)}, "
@@ -551,6 +673,7 @@ def main():
           f"router: {len(routers)}, junction: {len(junctions)}, overflow-gate: "
           f"{len(overflow_gates)}, bridge: {len(bridges)}, mass-driver: {len(mass_drivers)}, "
           f"unloader: {len(unloaders)}, generator: {len(generators)}, power-node: {len(power_nodes)}, "
+          f"battery: {len(batteries)}, "
           f"bỏ qua: {len(skipped)}")
 
     # Lượt 2: MỌI block còn lại (bất kể class), chỉ lấy tên+category+size,
@@ -574,7 +697,7 @@ def main():
     write_output(
         item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
         conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
-        generators, power_nodes, beam_drills, wall_crafters, solid_pumps, other, skipped,
+        generators, power_nodes, beam_drills, wall_crafters, solid_pumps, batteries, other, skipped,
     )
     print(f"đã ghi {OUT_PATH}")
 
@@ -582,7 +705,7 @@ def main():
 def write_output(
     item_field_to_name, liquid_field_to_name, drills, belts, factories, sorters, pumps,
     conduits, routers, junctions, overflow_gates, bridges, mass_drivers, unloaders, storages,
-    generators, power_nodes, beam_drills, wall_crafters, solid_pumps, other, skipped,
+    generators, power_nodes, beam_drills, wall_crafters, solid_pumps, batteries, other, skipped,
 ):
     lines = [
         '"""TỰ ĐỘNG SINH bởi tools/generate_catalog.py -- đừng sửa tay, chạy lại script.',
@@ -696,13 +819,19 @@ def write_output(
         lines.append(f'    "{st["name"]}": BuildingType("{st["name"]}", size={st["size"]}, kind="storage"),')
     for g in sorted(generators, key=lambda b: b["name"]):
         liquid_repr = "{" + ", ".join(f'"{k}": {v}' for k, v in g["liquid_inputs"].items()) + "}"
+        fixed_item_repr = f'"{g["fixed_item"]}"' if g["fixed_item"] is not None else "None"
         lines.append(
             f'    "{g["name"]}": BuildingType("{g["name"]}", size={g["size"]}, kind="generator", '
             f'power_production={g["power_production"]}, item_duration={g["item_duration"]}, '
-            f'min_flammability={g["min_flammability"]}, generator_liquid_inputs={liquid_repr}),'
+            f'min_flammability={g["min_flammability"]}, generator_liquid_inputs={liquid_repr}, '
+            f'generator_item={fixed_item_repr}, generator_item_amount={g["fixed_item_amount"]}, '
+            f'generator_passive={g["passive"]}, generator_liquid_only={g["liquid_only"]}, '
+            f'power_input={g["power_input"]}),'
         )
     for pn in sorted(power_nodes, key=lambda b: b["name"]):
-        lines.append(f'    "{pn["name"]}": BuildingType("{pn["name"]}", size={pn["size"]}, kind="power-node", power_range={pn["power_range"]}),')
+        lines.append(f'    "{pn["name"]}": BuildingType("{pn["name"]}", size={pn["size"]}, kind="{pn["kind"]}", power_range={pn["power_range"]}),')
+    for bt in sorted(batteries, key=lambda b: b["name"]):
+        lines.append(f'    "{bt["name"]}": BuildingType("{bt["name"]}", size={bt["size"]}, kind="battery", battery_capacity={bt["battery_capacity"]}),')
     lines.append("}")
     lines.append("")
     lines.append("# Chỉ có tên+category+size, CHƯA có recipe/rate -- planner từ chối đặt")

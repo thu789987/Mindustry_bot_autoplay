@@ -440,21 +440,32 @@ def _unloader_output_rate(grid: Grid, b: PlacedBuilding):
 
 
 def _power_capable(b: PlacedBuilding) -> bool:
-    """Building tham gia mạng điện: generator (sản xuất), power-node (chỉ
-    truyền, không tự sản xuất/tiêu thụ), hoặc bất kỳ building nào cần điện
-    (power_input > 0, vd laser-drill/blast-drill/silicon-smelter thật --
-    xem Blocks.java consumePower())."""
-    return b.type.kind in ("generator", "power-node") or b.type.power_input > 0
+    """Building tham gia mạng điện: generator (sản xuất), power-node/
+    beam-node (chỉ truyền, không tự sản xuất/tiêu thụ -- xem
+    _generator_power_rate/_power_satisfaction, cả 2 đều không cộng dồn gì
+    cho kind này), battery (lưu trữ, cũng không sản xuất/tiêu thụ ròng
+    trong mô hình trung bình ổn định -- xem battery_capacity ở
+    buildings.py), hoặc bất kỳ building nào cần điện (power_input > 0, vd
+    laser-drill/blast-drill/silicon-smelter/impact-reactor thật -- xem
+    Blocks.java consumePower())."""
+    return b.type.kind in ("generator", "power-node", "beam-node", "battery") or b.type.power_input > 0
 
 
 def _power_linked(a: PlacedBuilding, b: PlacedBuilding) -> bool:
     """Xấp xỉ PowerNode.overlaps(): 2 building có điện được nối KHÔNG DÂY nếu
     (1) chân đế chạm nhau trực tiếp (giống cách building thường "bắt tay"
-    không cần belt ở giữa, xem output_tile()/touches_target), hoặc (2) 1
-    trong 2 là power-node và building kia nằm trong bán kính `power_range`
-    (số ô, xem PowerNode.java laserRange) tính từ tâm node -- dùng khoảng
-    cách Euclidean gần đúng hình tròn thật, không phải hình chữ nhật/tia
-    laser chính xác như game gốc."""
+    không cần belt ở giữa, xem output_tile()/touches_target), (2) 1 trong 2
+    là power-node và building kia nằm trong bán kính `power_range` (số ô,
+    xem PowerNode.java laserRange) tính từ tâm node -- dùng khoảng cách
+    Euclidean gần đúng hình tròn thật, không phải hình chữ nhật/tia laser
+    chính xác như game gốc, hoặc (3) 1 trong 2 là beam-node và building kia
+    nằm THẲNG HÀNG (cùng x hoặc cùng y -- BeamNode.java chỉ nối đúng 4
+    hướng Đông/Tây/Nam/Bắc, không phải toả tròn như power-node) trong tầm
+    `power_range` (BeamNode.java field `range`, cùng đơn vị ô). Xấp xỉ:
+    KHÔNG mô phỏng occlusion thật (BeamNode.java chỉ nối tới vật CHẮN GẦN
+    NHẤT theo mỗi hướng, dừng lại nếu có building khác chắn giữa đường) --
+    coi mọi cặp thẳng hàng trong tầm là nối được, có thể lạc quan hơn thật
+    nếu có building khác chắn giữa 2 đầu (xem NEXT_STEPS.md)."""
     a_tiles = a.footprint()
     b_set = set(b.footprint())
     for ax, ay in a_tiles:
@@ -471,6 +482,16 @@ def _power_linked(a: PlacedBuilding, b: PlacedBuilding) -> bool:
             dist = ((ox + 0.5 - ncx) ** 2 + (oy + 0.5 - ncy) ** 2) ** 0.5
             if dist <= node.type.power_range:
                 return True
+
+    for node, other in ((a, b), (b, a)):
+        if node.type.kind != "beam-node":
+            continue
+        for nx, ny in node.footprint():
+            for ox, oy in other.footprint():
+                if nx == ox and abs(ny - oy) <= node.type.power_range:
+                    return True
+                if ny == oy and abs(nx - ox) <= node.type.power_range:
+                    return True
     return False
 
 
@@ -503,28 +524,71 @@ def _build_power_networks(buildings):
 
 
 def _generator_power_rate(grid: Grid, b: PlacedBuilding, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
-    """Xấp xỉ ConsumeGenerator.java: chọn nhiên liệu cháy tốt nhất (flammability
-    cao nhất) trong số item được belt dẫn tới, giới hạn bởi tốc độ đốt tối đa
-    (1 item mỗi item_duration tick) và nguồn cung thật, cùng nguồn liquid đi
-    kèm nếu có (vd nước cho steam-generator) -- công thức giống hệt cycle_rate
-    của factory thường trong evaluate_layout, chỉ khác input là "bất kỳ item
-    đủ flammability" thay vì 1 item cố định."""
-    best_flammability = 0.0
-    best_rate = 0.0
-    for src, cap in in_edges.get(b, []):
-        item = ITEMS.get(produced_item(grid, src))
-        if item is None or item.flammability < b.type.min_flammability:
-            continue
-        rate = min(output_rate.get(id(src), 0.0) / branch_count[src], cap)
-        if rate > 0 and item.flammability > best_flammability:
-            best_flammability = item.flammability
-            best_rate = rate
+    """Xấp xỉ PowerGenerator.java getPowerProduction() = powerProduction *
+    productionEfficiency (đã nhân TICKS_PER_SECOND để ra công suất/giây).
+    4 cách tính `productionEfficiency`, khớp 4 nhóm class Java thật (audit
+    "Power Blocks", xem NEXT_STEPS.md):
 
-    if best_flammability <= 0 or b.type.item_duration <= 0:
-        return 0.0
+    1. generator_passive=True (SolarGenerator.java, solar-panel/-large): ra
+       điện THỤ ĐỘNG, không cần input -- hiệu suất thật phụ thuộc ánh sáng
+       môi trường + state.rules.solarMultiplier, KHÔNG mô phỏng ngày/đêm --
+       xấp xỉ LUÔN đủ nắng (hiệu suất=1.0 cố định).
+    2. generator_liquid_only=True (chemical-combustion-chamber/pyrolysis-generator:
+       CHỈ consumeLiquids(...), không có consumeItem() nào -- khác hẳn case
+       3/4, không có "chu kỳ" item nào để giới hạn tốc độ): hiệu suất =
+       tỉ lệ lưu lượng liquid ĐANG CÓ / lưu lượng CẦN LIÊN TỤC (không quy
+       đổi theo item_duration), trần 1.0.
+    3. generator_item != None (ConsumeGenerator.java dùng consumeItem(X) CỐ
+       ĐỊNH thay vì ConsumeItemFlammable -- vd differential-generator; hoặc
+       NuclearReactor.java/ImpactReactor.java, cùng dạng "cần đúng 1 item cố
+       định"): SUM rate của ĐÚNG item đó (không so flammability), cycle_rate
+       giới hạn bởi available/generator_item_amount.
+    4. Mặc định (ConsumeItemFlammable.java thật, combustion-generator/
+       steam-generator): chọn nhiên liệu cháy tốt nhất (flammability cao
+       nhất) trong số item được belt dẫn tới -- hành vi CŨ, không đổi.
 
-    max_cycle_rate = TICKS_PER_SECOND / b.type.item_duration
-    cycle_rate = min(max_cycle_rate, best_rate)
+    Cả 4 đều áp dụng CHUNG bước giới hạn liquid đi kèm (generator_liquid_inputs,
+    vd nước cho steam-generator/thorium-reactor) sau đó -- riêng case 2,
+    generator_liquid_inputs lưu trực tiếp đơn vị "cần/giây" (không nhân
+    item_duration vì không có chu kỳ item nào), nên bước giới hạn liquid
+    dùng chung code nhưng max_cycle_rate/cycle_rate ban đầu = 1.0 khớp đúng
+    đơn vị đó."""
+    if b.type.generator_passive:
+        return TICKS_PER_SECOND * b.type.power_production
+
+    if b.type.generator_liquid_only:
+        max_cycle_rate = 1.0
+        cycle_rate = 1.0
+        flammability_scale = 1.0
+    elif b.type.generator_item is not None:
+        available = sum(
+            min(output_rate.get(id(src), 0.0) / branch_count[src], cap)
+            for src, cap in in_edges.get(b, [])
+            if produced_item(grid, src) == b.type.generator_item
+        )
+        if b.type.item_duration <= 0 or b.type.generator_item_amount <= 0:
+            return 0.0
+        max_cycle_rate = TICKS_PER_SECOND / b.type.item_duration
+        cycle_rate = min(max_cycle_rate, available / b.type.generator_item_amount)
+        flammability_scale = 1.0  # item cố định -- không có khái niệm "cháy tốt tới đâu"
+    else:
+        best_flammability = 0.0
+        best_rate = 0.0
+        for src, cap in in_edges.get(b, []):
+            item = ITEMS.get(produced_item(grid, src))
+            if item is None or item.flammability < b.type.min_flammability:
+                continue
+            rate = min(output_rate.get(id(src), 0.0) / branch_count[src], cap)
+            if rate > 0 and item.flammability > best_flammability:
+                best_flammability = item.flammability
+                best_rate = rate
+
+        if best_flammability <= 0 or b.type.item_duration <= 0:
+            return 0.0
+
+        max_cycle_rate = TICKS_PER_SECOND / b.type.item_duration
+        cycle_rate = min(max_cycle_rate, best_rate)
+        flammability_scale = best_flammability
 
     for liquid_name, amount_per_cycle in b.type.generator_liquid_inputs.items():
         available = sum(
@@ -537,7 +601,7 @@ def _generator_power_rate(grid: Grid, b: PlacedBuilding, in_edges, branch_count,
 
     if cycle_rate <= 0:
         return 0.0
-    return TICKS_PER_SECOND * b.type.power_production * best_flammability * (cycle_rate / max_cycle_rate)
+    return TICKS_PER_SECOND * b.type.power_production * flammability_scale * (cycle_rate / max_cycle_rate)
 
 
 def _power_satisfaction(grid: Grid, buildings, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):

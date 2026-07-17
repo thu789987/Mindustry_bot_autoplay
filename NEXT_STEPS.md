@@ -1,5 +1,360 @@
 # Việc cần làm tiếp — đọc file này khi quay lại
 
+## Bug thật: bot/llm_parser.py's SUPPORTED_KINDS lỗi thời, không đồng bộ CATALOG
+
+User hỏi "AI của LM studio không đọc và tự phân quyền trong code dc à?" ->
+verify thật trả lời rõ 2 việc: (1) model LM Studio KHÔNG tự đọc source code
+gì cả -- chỉ thấy đúng đoạn prompt tay viết trong `_system_prompt()`; (2)
+model KHÔNG có quyền tự cấp gì -- `_validate_one()` đối chiếu MỌI field
+model trả về với whitelist lấy trực tiếp từ `CATALOG` thật, sai gì cũng bị
+âm thầm loại (`"action":"unknown"`), không lan xuống `planner.py`.
+
+Nhân đó phát hiện bug thật: `SUPPORTED_KINDS` (`bot/llm_parser.py`) là 1 set
+HARDCODE TAY, không tự đồng bộ theo CATALOG -- audit "Power Blocks" thêm
+`kind="battery"`/`"beam-node"` (build trực tiếp được qua `plan_build()`) mà
+quên cập nhật set này, khiến model LM Studio KHÔNG BAO GIỜ biết 2 loại đó
+tồn tại (dù dict parser đã nhận diện được) -- không phải giới hạn kiến
+trúc, chỉ thiếu đồng bộ.
+
+**Sửa**: thêm `"battery"`, `"beam-node"` vào `SUPPORTED_KINDS`. Verify:
+`_valid_building_names()` giờ có đủ `battery`/`beam-node`/`beam-tower`/
+`beam-link`; test bằng response JSON giả lập build cả 2 loại -> validate +
+`plan()` đặt được thật (chưa test LM Studio thật, cùng giới hạn CHƯA TEST
+đã ghi sẵn đầu file `bot/llm_parser.py`).
+
+**Lưu ý còn treo**: `SUPPORTED_KINDS` vẫn là set tay, có thể LỖI THỜI TRỞ
+LẠI nếu sau này thêm kind mới mà quên cập nhật (đúng như lần này) -- có thể
+cân nhắc tự suy ra từ danh sách kind mà `plan_build()` thực sự xử lý được
+thay vì duy trì 2 nơi song song, nhưng chưa làm (thay đổi cấu trúc lớn hơn,
+ngoài phạm vi lần sửa nhỏ này).
+
+## Bug thật: nói tên generator CHƯA hỗ trợ bị âm thầm xây nhầm
+
+User hỏi "ví dụ tôi kêu bot làm rtg-generator thì bot sẽ làm gì" -> verify
+thật phát hiện: `"máy phát điện rtg"` bị `_find_building()` hiểu nhầm thành
+**combustion-generator** (âm thầm, không lỗi gì) -- vì phrase generic "máy
+phát điện" khớp thẳng vào text, thắng trước khi kịp xét "rtg" trong cơ chế
+so khớp cũ (dài nhất thắng, `sorted(BUILDING_PHRASES, key=len,
+reverse=True)`). "rtg" là hậu tố RỜI (không lồng trong 1 phrase dài hơn có
+sẵn như "nhà máy điện hơi nước" lồng "nhà máy điện"), nên length-sort không
+tự cứu được như các generator đã hỗ trợ khác.
+
+**Sửa** (`bot/command_parser.py`): `_UNSUPPORTED_GENERATOR_MARKERS` --
+marker riêng cho 7 generator audit "Power Blocks" xác nhận CHƯA hỗ trợ
+(`rtg`, `thermal-generator`, `turbine-condenser`/`turbine`,
+`flux-reactor`/`flux`, `neoplasia`, `vent-condenser`, `diode`/`điốt`) --
+check TRƯỚC vòng lặp `BUILDING_PHRASES` thường, BẤT KỂ độ dài chuỗi. Nhận ra
+1 trong 7 marker -> trả về đúng tên CATALOG thật (vd "rtg-generator") thay
+vì phrase generic -- để lệnh này chảy vào `plan_build()`'s nhánh
+`GENERATED_OTHER` (category != None) đã có sẵn, báo lỗi RÕ RÀNG ("chưa hỗ
+trợ xây 'rtg-generator' (thuộc nhóm 'power')...") thay vì xây nhầm hoặc trả
+"unknown" mơ hồ.
+
+Test (`bot/unsupported_generator_demo.py`): 4 kịch bản -- (1) "máy phát
+điện rtg" nhận đúng rtg-generator, không còn lẫn combustion-generator; (2)
+`plan_build()` raise lỗi rõ, map không bị xây nhầm gì (chỉ còn core); (3)
+4 generator ĐÃ hỗ trợ (combustion/steam/solar-panel/thorium-reactor) không
+bị ảnh hưởng; (4) cả 7 marker đều nhận đúng tên CATALOG thật.
+
+## Audit "Power Blocks" đầy đủ (24 block thật, từ 5/24 lên 17/24 có cơ chế thật)
+
+User: "Tới mục Power Blocks, liệt kê tất cả loại cho tôi" -> liệt kê đủ 24
+block (`reference/Blocks.java:135-141`) -> "làm tiếp cho tất cả danh sách
+này". Đã tải thêm source thật từ Anuken/Mindustry GitHub (raw.githubusercontent.com,
+các file KHÔNG có sẵn trong `reference/`) để verify từng mechanic trước khi
+code: `ThermalGenerator.java, SolarGenerator.java, NuclearReactor.java,
+ImpactReactor.java, PowerDiode.java, BeamNode.java, LongPowerNode.java,
+VariableReactor.java, HeaterGenerator.java, AttributeCrafter.java,
+ConsumeItemRadioactive.java, PowerGenerator.java`.
+
+### Đã model thêm 12 block (5/24 -> 17/24)
+
+- **PowerNode family**: `beam-link` (LongPowerNode.java kế thừa THẲNG
+  PowerNode -- cùng field `laserRange`, gộp vào `POWER_NODE_CLASSES` không
+  cần cơ chế mới). `beam-node`/`beam-tower` (BeamNode.java -- kind mới
+  `"beam-node"`, nối THẲNG HÀNG theo 4 hướng Đông/Tây/Nam/Bắc trong tầm
+  `range`, KHÁC power-node toả tròn Euclidean -- xem `sim.py:_power_linked`
+  nhánh beam-node. Xấp xỉ: KHÔNG mô phỏng occlusion thật (BeamNode.java chỉ
+  nối tới vật CHẮN GẦN NHẤT mỗi hướng) -- coi mọi cặp thẳng hàng trong tầm
+  là nối được, có thể lạc quan hơn thật nếu có building khác chắn giữa).
+- **Generator thụ động**: `solar-panel`/`solar-panel-large`
+  (SolarGenerator.java -- ra điện KHÔNG cần input gì, hiệu suất thật phụ
+  thuộc ánh sáng môi trường + `state.rules.solarMultiplier`, KHÔNG mô phỏng
+  ngày/đêm -- xấp xỉ LUÔN đủ nắng, `generator_passive=True` trong
+  `buildings.py`).
+- **Generator item cố định** (khác hẳn combustion/steam-generator đốt BẤT
+  KỲ item đủ flammability): `differential-generator` (pyratite + cryofluid,
+  ConsumeGenerator.java), `thorium-reactor` (thorium, NuclearReactor.java --
+  bỏ qua hoàn toàn phần làm mát/nguy cơ nổ, KHÔNG ảnh hưởng số liệu công
+  suất tính được), `impact-reactor` (blast-compound + cryofluid + TỰ TIÊU
+  1500 điện/giây, ImpactReactor.java -- building VỪA sản xuất VỪA tiêu thụ,
+  `_power_capable`/`_power_satisfaction` đã tổng quát sẵn cho case này,
+  không cần sửa gì thêm). Field mới: `generator_item`/`generator_item_amount`
+  trên `BuildingType`.
+- **Generator chỉ liquid** (không item nào): `chemical-combustion-chamber`,
+  `pyrolysis-generator` -- không có "chu kỳ item" nào để giới hạn tốc độ,
+  hiệu suất = tỉ lệ lưu lượng liquid đang có / cần liên tục (field mới
+  `generator_liquid_only`, xem `sim.py:_generator_power_rate`).
+- **Battery**: `battery`/`battery-large` (Battery.java) -- kind mới
+  `"battery"`, tham gia mạng điện (`_power_capable`) nhưng KHÔNG sản
+  xuất/tiêu thụ ròng (khớp đúng comment CŨ đã có sẵn trong
+  `_build_power_networks`: "battery không đổi kết quả trung bình dài hạn").
+
+### 2 bug thật phát hiện + sửa khi làm (verify TRƯỚC khi merge)
+
+1. **`plan_build()`'s nhánh "generator" HARDCODE than** bất kể generator
+   thật cần gì -- chỉ đúng cho combustion/steam-generator. Sửa: tổng quát
+   theo `generator_item` (mặc định "than" nếu không set, giữ nguyên hành vi
+   cũ 2 building hiện có), ưu tiên TÁI SỬ DỤNG factory đã sản xuất sẵn fuel
+   đó (`find_producer` trước, giống pyratite -- KHÔNG phải ore thật, không
+   thể tự đặt drill), chỉ tự đặt drill mới nếu fuel là ore thật (`thorium`,
+   `hardness=4` thật) và chưa có nguồn nào.
+2. **Fuel drill tier cao không được cấp điện** -- generator branch (cả bản
+   cũ lẫn bản mới) chưa từng gọi `_ensure_powered()` cho drill than tự đặt,
+   không sao vì mechanical-drill (than) có `power_input=0`. Khi tổng quát
+   sang fuel khác (thorium cần laser-drill, `power_input=66`), bug lộ ra:
+   drill không điện, `_power_satisfaction` nhân rate về 0 ÂM THẦM (không
+   lỗi gì, chỉ generator ra đúng 0 điện) -- verify bằng test thật trước khi
+   phát hiện. Sửa: thêm `_ensure_powered()` cho fuel drill mới đặt.
+
+### Test (`bot/power_blocks_demo.py`)
+
+8 kịch bản, MỖI kịch bản đối chiếu công thức tính TAY: (1) solar-panel thụ
+động; (2) beam-node thẳng hàng vs chéo (không nối); (3) battery tham gia
+mạng qua power-node; (4) "xây pin"/"xây nút beam" build TRỰC TIẾP qua lệnh
+(battery/beam-node/power-node giờ CÓ nhánh đặt riêng trong `plan_build`,
+khác router/junction/bridge/overflow-gate/mass-driver/unloader -- những
+loại đó CHỈ auto-đặt khi routing, không phải đích lệnh trực tiếp, xem mục
+"Sorter"/"Router" phía dưới); (5) thorium-reactor full chain qua
+`plan_build` (bao gồm cả 2 bug trên); (6) differential-generator tái sử
+dụng factory pyratite-mixer có sẵn; (7) chemical-combustion-chamber
+liquid-only; (8) impact-reactor dual sản xuất/tiêu thụ, net dương.
+
+### 7/24 CHỦ ĐỘNG bỏ qua -- có lý do thật, không phải bỏ sót
+
+- **`rtg-generator`**: dùng `ConsumeItemRadioactive` (`item.radioactivity`),
+  KHÁC hẳn `ConsumeItemFlammable` (`item.flammability`) -- cùng CẤU TRÚC
+  (chọn item tốt nhất theo 1 property, có ngưỡng tối thiểu) nên về lý
+  thuyết dễ thêm, nhưng cần parse thêm field `Item.radioactivity` từ
+  Items.java thật trước (chưa làm) -- follow-up nhỏ, gọn, chưa triển khai.
+- **`thermal-generator`/`turbine-condenser`**: đọc `Attribute.heat` --
+  CHƯA có khái niệm "heat" trong `Tile`/state schema (khác `ore`/`liquid`
+  đã có) -- cần thêm 1 lớp attribute MỚI vào toàn bộ pipeline (state.py,
+  grid.py, generate_catalog.py), lớn hơn hẳn phạm vi 1 lượt sửa.
+- **`flux-reactor`/`neoplasia-reactor`** (VariableReactor.java/
+  HeaterGenerator.java): cơ chế heat-instability/công suất biến thiên theo
+  thời gian, khác hẳn mô hình thông lượng trung bình ổn định 1 lần của
+  simulator này.
+- **`diode`** (PowerDiode.java): chuyển điện dựa trên % PIN của 2 phía, MỖI
+  TICK, hội tụ dần theo thời gian -- hoàn toàn không tương thích với mô
+  hình "tính 1 lần, trạng thái ổn định" (không có khái niệm % pin theo
+  tick nào trong simulator này cả).
+- **`vent-condenser`** (AttributeCrafter.java): thực ra là CRAFTER (kế thừa
+  GenericCrafter, ra item/liquid theo Recipe), chỉ được BOOST bởi
+  `Attribute.heat` -- cùng lý do thermal-generator (chưa có heat), không
+  phải generator thật (bị xếp nhầm category "power" trong game).
+
+## Cụm pump ("xây N máy bơm nước") -- pump sát nhau, dùng chung 1 đường ống
+
+User: "bot có biết tự đặt pump sát nhau và tối ưu đường dẫn nước không" ->
+xác nhận thật: "xây N máy bơm nước" trước đây bỏ qua hẳn số N (luôn đặt
+đúng 1 pump). Đề xuất cơ chế cụm (giống generator cluster) -- user: "Tôi
+muốn".
+
+### Đã làm
+
+- `bot/command_parser.py`: `_PUMP_NAMES` giờ cũng bắt `COUNT_RE` (giống
+  `_GENERATOR_NAMES`) -- "xây N máy bơm nước"/"xây N bơm ly tâm nước" set
+  `command["count"]`.
+- `bot/planner.py:_place_pump_row_manifold` (mới, mirror
+  `_build_drill_row_manifold`): đặt tối đa N pump dọc theo bồn liquid (chạm
+  đúng liquid_target), đổ chung vào 1 LANE conduit. **Không cần
+  liquid-router** để gom nhiều pump vào 1 đường -- conduit tự MERGE từ bất
+  kỳ cạnh nào (giống conveyor, xem mục "Nhập chung belt" bên dưới +
+  `simulator/sim.py:_trace_branching` dòng `if b.type.kind == belt_kind`)
+  -- router chỉ cần khi CHIA 1 nguồn ra NHIỀU đích, không phải khi GOM
+  nhiều nguồn vào 1 đích.
+- `bot/planner.py:plan_build_pump_cluster` (mới): quét bounding box của
+  liquid_target, xếp N pump thành hàng (wrap nhiều hàng nếu bồn hẹp, các
+  hàng tự nối lane liên tục với nhau -- mirror `plan_fill_ore`), mỗi pump
+  tự `_ensure_powered`. **KHÔNG tự nối lane đi đâu cả** (giữ nguyên hành vi
+  "bơm nước" 1-pump hiện có -- chỉ đứng đó, chờ nơi khác tới dùng qua
+  `find_liquid_producer`).
+- `plan_build()`: dispatch `command.get("count")` theo `CATALOG[...].kind`
+  (`"pump"` -> `plan_build_pump_cluster`, còn lại -> `plan_build_generator_cluster`
+  như cũ).
+
+### Bug thật phát hiện + sửa khi làm (verify TRƯỚC khi merge)
+
+`_route_or_branch_from_producer()` dùng `trace_belt_path()` để xem 1
+producer đã có sẵn đường đi đâu chưa -- nhưng hàm đó trả **cùng 1 giá trị
+None** cho 2 trường hợp khác hẳn nhau: (a) chuỗi belt/conduit dẫn tới building
+THẬT (trước đây coi đây LÀ điều kiện thường), và (b) chuỗi dẫn tới Ô TRỐNG
+(dangling). Lane chung của cụm pump vừa xây RƠI ĐÚNG vào case (b) (cố ý
+chưa nối đi đâu) -- code cũ coi cả 2 case là LỖI như nhau ("không tìm được
+đường"), dù case (b) hoàn toàn hợp lệ, chỉ cần NỐI TIẾP từ đầu dây đang bỏ
+trống, không phải chia nhánh qua router (chưa có đích cũ nào cần giữ).
+
+Sửa: `_dangling_belt_end()` (mới, không đổi `trace_belt_path()` dùng chung
+toàn dự án để tránh phá vỡ chỗ khác) -- tự đi theo chuỗi belt/conduit,
+**phân biệt rõ** "chạm building thật" (trả `(True, building)`) với "chạm ô
+trống" (trả `(False, dangling_tile)`). `_route_or_branch_from_producer` giờ
+dùng hàm này: case dangling -> `_route()` tiếp từ `dangling_tile`, không
+raise lỗi.
+
+### Test (`bot/pump_cluster_demo.py`)
+
+4 kịch bản: (1) "xây 5 máy bơm nước" -- 5 pump sát nhau 1 hàng, dùng chung 1
+lane; (2) cụm vừa xây được steam-generator TÁI SỬ DỤNG (không xây pump thứ
+6); (3) bồn hẹp ép wrap qua nhiều hàng -- verify TOÀN BỘ cụm vẫn là 1 đường
+LIÊN TỤC (không phải nhiều cụm rời rạc) bằng cách xây tiếp steam-generator
+và xác nhận nhận được nước; (4) cụm tier mạnh hơn ("xây 2 bơm ly tâm nước")
+-- đặt đúng số lượng + mỗi pump tự cấp điện đủ.
+
+### Giới hạn đã biết
+
+- Cụm pump dùng tier TỐN ĐIỆN (rotary/impulse) với SỐ LƯỢNG LỚN có thể chạm
+  giới hạn SẴN CÓ của `_ensure_powered()` (không phải bug mới của tính năng
+  này) -- mỗi lần gọi, nếu lưới điện hiện có CHƯA đủ công suất, tự xây 1
+  combustion-generator + coal-drill RIÊNG (không chia sẻ/tính gộp công suất
+  giữa các lần gọi liên tiếp, xem comment trong `_ensure_powered`) -- verify
+  thật: 3 rotary-pump/1 hàng (cần 54 điện, 1 generator no đủ than lý thuyết
+  tối đa 60) vẫn có thể lỗi "không nối được than" do drill than tự động của
+  lần gọi thứ 2 không đủ mạnh + không gian chật; 2 rotary-pump luôn ổn định.
+  Đây CHÍNH LÀ lý do `plan_build_generator_cluster` (mục cụm generator bên
+  dưới) phải viết cơ chế cấp than RIÊNG thay vì gọi `_ensure_powered` N
+  lần -- cụm pump hiện CHƯA áp dụng cách tương tự (mechanical-pump,
+  power_input=0, là trường hợp phổ biến nhất nên không bị ảnh hưởng).
+- "Tối ưu đường dẫn nước" (thuật toán, không phải cấu trúc cụm) vẫn CHƯA có
+  gì hơn BFS đường ngắn nhất theo số ô (giống mọi belt routing khác trong dự
+  án) -- không tính số lần rẽ, không tối ưu không gian thật (Milestone 3 --
+  Simulated Annealing -- đã hẹn làm sau, chưa triển khai).
+
+## 2 bug pump thật (phát hiện khi user hỏi "bot biết chọn pump nào không?")
+
+### Bug 1: find_pump_spot() dò chỗ trống theo size SAI (hardcode mechanical-pump)
+
+`find_pump_spot()` trước đây luôn dùng `CATALOG["mechanical-pump"]` (1x1) để
+kiểm chỗ trống, **bất kể building THẬT SỰ sắp đặt là gì**. Lệnh xây trực
+tiếp "bơm ly tâm nước" (rotary-pump, 2x2) hay "bơm xung lực nước"
+(impulse-pump, 3x3) ở chỗ chật có thể tìm ra chỗ tưởng vừa (đủ cho 1x1)
+nhưng đặt thật lại lỗi "cannot place" vì footprint to hơn thật.
+
+**Sửa**: thêm tham số `pump_type=None` (mặc định vẫn mechanical-pump, không
+đổi hành vi cũ ở 3/4 call site tự động luôn đặt mechanical-pump) -- riêng
+call site của lệnh xây pump TRỰC TIẾP (`plan_build`'s nhánh `kind=="pump"`)
+giờ truyền đúng `building_type` thật vào.
+
+### Bug 2: generator (steam-generator) LUÔN xây pump MỚI, không tái sử dụng nguồn có sẵn
+
+User: "Logic đó không đúng, nếu như đã có 1 nguồn nước thì dùng bộ phân chia
+nguồn nước đã có ra làm 2, rồi 1 dẫn về steam-generator là được, không phải
+lúc nào cũng tạo nguồn nước mới" -- xác nhận thật: nhánh liquid-input của
+generator (`plan_build`'s `kind=="generator"`) trước đây **luôn** gọi
+`find_untapped_liquid()` (tìm tile CHƯA khai thác) + xây pump MỚI, dù map
+đã có sẵn pump/water-extractor nào đó đang bơm ĐÚNG liquid cần.
+
+Cơ chế "tái sử dụng + chia nhánh qua liquid-router" **đã có sẵn** trong dự
+án cho 2 chỗ khác (`_try_boost_with_water` cho nước boost drill,
+`_find_or_build_factory_sources` cho liquid input của factory) -- nhánh
+generator đơn giản là BỎ SÓT bước này, không phải thiếu cơ chế.
+
+**Sửa**: thêm bước `find_liquid_producer(grid, liquid_name)` TRƯỚC khi tìm
+tile chưa khai thác. Nếu có sẵn producer, dùng
+`_route_or_branch_from_producer()` (hàm có sẵn, tự nhận biết: nếu producer
+CHƯA có đường đi đâu -> route thẳng; nếu ĐÃ bận nối chỗ khác -> tự đặt
+`liquid-router` CHIA nhánh cho cả đích cũ lẫn đích mới, xem
+`bot/planner.py:_route_or_branch_from_producer` docstring) -- chỉ xây pump
+MỚI khi map thật sự chưa có nguồn nào bơm đúng liquid đó.
+
+### Test (`bot/pump_reuse_demo.py`)
+
+3 kịch bản: (1) `find_pump_spot` dò đúng size cho mechanical-pump (1x1) vs
+rotary-pump (2x2) trong 1 ô nước bị bao vây chỉ đủ chỗ 1x1; (2)
+steam-generator tái sử dụng 1 pump có sẵn CHƯA bận -- không xây pump mới,
+route thẳng từ pump đó; (3) steam-generator gặp pump có sẵn ĐANG BẬN (đã
+nối 1 drill khác qua liquid boost) -- phải tự đặt `liquid-router` chia
+nhánh, cả drill lẫn steam-generator đều verify vẫn nhận đủ nước qua
+`evaluate_layout`.
+
+### Giới hạn còn lại (chưa làm, nằm ngoài yêu cầu lần này)
+
+Bot vẫn KHÔNG có logic chọn TIER pump theo nhu cầu liquid thực tế (luôn
+mechanical-pump khi tự động đặt mới) -- xem mục "Audit Liquid Blocks" bên
+dưới, phần "Bot có biết nên dùng pump nào không?". User đã bác bỏ hướng
+"tính nhu cầu rồi chọn tier mạnh hơn" để ưu tiên hướng tái sử dụng ở trên,
+nên việc tự chọn tier theo nhu cầu (nếu cần) vẫn còn treo, chưa triển khai.
+
+## Audit "Liquid Blocks" + thêm phrase cho rotary-pump/impulse-pump
+
+User: "Đọc hết các blocks Liquid Blocks" -- đọc `reference/Blocks.java:129-133`
+(category liquid thật, đúng 19 block: 12 thường + 7 reinforced), đối chiếu
+`simulator/generated_catalog.py`.
+
+### Kết quả audit
+
+- **18/19 đã có cơ chế mô phỏng đầy đủ**: Pump (mechanical/rotary/impulse),
+  Conduit/ArmoredConduit (thường + reinforced), LiquidRouter (router/
+  container/tank + reinforced), LiquidJunction (+ reinforced),
+  LiquidBridge/DirectionLiquidBridge (bridge-conduit/phase-conduit/
+  reinforced-bridge-conduit).
+- **1/19 bị bỏ (có lý do thật)**: `reinforced-pump` -- khác hẳn `Pump`
+  thường, nó **tự tiêu thụ hydro** để bơm
+  (`consumeLiquid(Liquids.hydrogen, 1.5f/60f)`, `Blocks.java:2402`), không
+  phải "hút liquid từ tile". Rơi vào `GENERATED_OTHER` (tên+category, không
+  có rate).
+- Router/junction/bridge (cả item lẫn liquid) **không directly buildable
+  qua lệnh** -- nhưng đây là giới hạn thiết kế CHUNG (`plan_build()` chỉ
+  chấp nhận kind `drill/beam-drill/wall-crafter/solid-pump/pump/generator/
+  factory`, xem `planner.py:1778`), không phải riêng liquid.
+
+### Gap thật tìm thấy + đã sửa: rotary-pump/impulse-pump không gọi được qua lệnh
+
+`command_parser.py` trước đây chỉ có phrase cho `mechanical-pump`
+("bơm"/"pump"). `rotary-pump`/`impulse-pump` (2 tier bơm mạnh hơn, tốn điện
+hơn -- xem `power_input`/`pump_amount` trong `generated_catalog.py`) không
+có cách nào gọi tên, dù `planner.py`'s nhánh `kind=="pump"` (dòng 1715)
+vốn đã TỔNG QUÁT cho mọi loại pump (comment sẵn trong code đã dự đoán trước
+việc này).
+
+**Quyết định thiết kế**: `Pump.java` KHÔNG có field `tier`/ngưỡng năng lực
+như `Drill.java` (drill yếu quá thì KHÔNG mine nổi -- xem
+`select_drill_type()`) -- pump nào cũng bơm được MỌI liquid, chỉ khác
+`pump_amount`/`power_input`. Vì vậy áp dụng tinh thần **"nhà máy điện"**
+(mặc định RẺ NHẤT, nói rõ tên mới đổi loại) thay vì tinh thần **"máy
+khoan"** (sentinel + auto-chọn theo năng lực) -- **không** thêm sentinel tự
+chọn tier theo nhu cầu liquid vì không có cơ sở thật nào trong `Pump.java`
+để dựa vào, tránh bịa ra khái niệm "tier" không tồn tại trong game.
+
+**Đã làm**:
+- `BUILDING_PHRASES`: `"bơm ly tâm"` -> `rotary-pump`, `"bơm xung lực"` ->
+  `impulse-pump` (+ tên tiếng Anh literal). **KHÔNG dùng "quay"/"xoay"** cho
+  rotary-pump -- trùng `ACTION_PHRASES["quay"]`/`["xoay"]="rotate"` (cùng
+  lớp bug với "nối lại" ở mục merge bên dưới: sẽ khiến "bơm xoay nước" bị
+  hiểu nhầm thành lệnh xoay). Dùng "ly tâm" (tên máy bơm ly tâm thật) để
+  tránh va chạm.
+- `_PUMP_NAMES = {"mechanical-pump", "rotary-pump", "impulse-pump"}` (mới,
+  giống `_DRILL_NAMES`).
+
+**Bug thật phát hiện + sửa khi thêm phrase**: mọi chỗ xử lý `liquid_target`
+trong `command_parser.py` (`_find_hint`, `parse_command`, `parse_commands`)
+đều **hardcode so sánh `building == "mechanical-pump"`** -- nếu chỉ thêm
+phrase mà không sửa 3 chỗ này, "bơm ly tâm nước" ra đúng
+`building=rotary-pump` nhưng `liquid_target=None` (planner.py raise lỗi
+"pump command needs a liquid_target", building đúng nhưng không hoạt động
+được). Sửa cả 3 chỗ dùng `_PUMP_NAMES` thay vì so sánh chuỗi cứng; riêng
+`parse_commands()`'s continuation logic còn sửa thêm để **kế thừa ĐÚNG tier
+pump** của đoạn trước (vd "bơm ly tâm nước, và dầu" -- đoạn "dầu" phải vẫn
+là rotary-pump, không tự rớt về mechanical-pump).
+
+### Test (`bot/pump_tier_demo.py`)
+
+5 kịch bản: (1) "bơm" trần vẫn mặc định mechanical-pump (không đổi hành vi
+cũ); (2) "bơm ly tâm"/"bơm xung lực" ra đúng building + liquid_target; (3)
+tên tiếng Anh literal; (4) câu ghép kế thừa đúng tier; (5) build thật
+rotary-pump qua `plan_build()` -- tự cấp điện đúng `power_input=18`, rate
+đúng công thức `Pump.java` thật (`pump_amount * 60`).
+
 ## Nhập chung (merge) belt của 2 nguồn khác loại ore vào core
 
 User: "Giờ ví dụ tôi gọ, Khai thác đồng và chì, cả 2 sẽ có 2 bẳng chuyền nối

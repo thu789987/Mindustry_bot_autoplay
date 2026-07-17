@@ -66,6 +66,22 @@ BUILDING_PHRASES = {
     "sorter": "sorter",
     "bơm": "mechanical-pump",
     "pump": "mechanical-pump",
+    # Pump.java KHÔNG có field "tier"/ngưỡng năng lực như Drill (bơm nào
+    # cũng bơm được mọi liquid, chỉ khác pump_amount/power_input) -- không
+    # có khái niệm "quá yếu, không bơm nổi" để cần sentinel tự chọn tier
+    # RẺ NHẤT ĐỦ DÙNG như select_drill_type(). Vì vậy áp dụng đúng tinh
+    # thần "nhà máy điện" (mặc định RẺ NHẤT, nói rõ tên mới đổi loại) thay
+    # vì tinh thần "máy khoan" (sentinel + auto-chọn theo năng lực): "bơm"
+    # trần vẫn mặc định mechanical-pump (rẻ nhất, 0 điện), nói rõ tên mới ra
+    # rotary-pump/impulse-pump (mạnh hơn, tốn điện, xem generated_catalog.py).
+    # KHÔNG dùng "quay"/"xoay" cho rotary-pump -- trùng
+    # ACTION_PHRASES["quay"]/["xoay"]="rotate" (như "nối lại" ở MERGE_PHRASES),
+    # sẽ khiến "bơm xoay nước" bị hiểu nhầm thành lệnh xoay. Dùng "ly tâm"
+    # (tên máy bơm ly tâm thật, không trùng từ khoá nào khác trong file này).
+    "bơm ly tâm": "rotary-pump",
+    "rotary-pump": "rotary-pump",
+    "bơm xung lực": "impulse-pump",
+    "impulse-pump": "impulse-pump",
     # nhà máy điện (generator, đốt item cháy được -- xem ConsumeGenerator.java,
     # NEXT_STEPS.md mục "Mạng điện"). Không nói rõ loại -> mặc định
     # combustion-generator (rẻ nhất, chỉ cần than, không cần nước), giống
@@ -79,6 +95,41 @@ BUILDING_PHRASES = {
     "nhà máy hơi nước": "steam-generator",
     "máy phát điện hơi nước": "steam-generator",
     "steam-generator": "steam-generator",
+    # Audit "Power Blocks" -- các generator mới model (xem NEXT_STEPS.md):
+    # mỗi loại cần đúng 1 fixed item/liquid riêng (generator_item/
+    # generator_liquid_inputs, KHÔNG phải "bất kỳ item cháy được" như trên),
+    # nên đặt tên RÕ để không lẫn với "nhà máy điện" chung chung.
+    "nhà máy điện mặt trời": "solar-panel",
+    "tấm pin mặt trời": "solar-panel",
+    "solar-panel": "solar-panel",
+    "tấm pin mặt trời lớn": "solar-panel-large",
+    "solar-panel-large": "solar-panel-large",
+    "lò phản ứng thorium": "thorium-reactor",
+    "nhà máy điện thorium": "thorium-reactor",
+    "thorium-reactor": "thorium-reactor",
+    "lò phản ứng va chạm": "impact-reactor",
+    "impact-reactor": "impact-reactor",
+    "máy phát điện vi sai": "differential-generator",
+    "differential-generator": "differential-generator",
+    "buồng đốt hoá chất": "chemical-combustion-chamber",
+    "chemical-combustion-chamber": "chemical-combustion-chamber",
+    "máy phát điện nhiệt phân": "pyrolysis-generator",
+    "pyrolysis-generator": "pyrolysis-generator",
+    # Battery.java (lưu trữ điện, không sản xuất -- xem buildings.py
+    # battery_capacity, KHÔNG ảnh hưởng thông lượng trung bình tính được).
+    "pin": "battery",
+    "cục pin": "battery",
+    "battery": "battery",
+    "pin lớn": "battery-large",
+    "battery-large": "battery-large",
+    # BeamNode.java (nối thẳng hàng 4 hướng, khác power-node toả tròn) +
+    # LongPowerNode.java (beam-link, kế thừa PowerNode y hệt -- cầu nối xa).
+    "nút beam": "beam-node",
+    "beam-node": "beam-node",
+    "tháp beam": "beam-tower",
+    "beam-tower": "beam-tower",
+    "cầu nối beam": "beam-link",
+    "beam-link": "beam-link",
 }
 
 # ore keyword (lowercase) -> item name in simulator.buildings.ITEMS, dùng khi
@@ -149,7 +200,40 @@ ORDINAL_RE = re.compile(r"thứ\s+(nhất|hai|ba|tư|bốn|năm|\d+)")
 REROUTE_RE = re.compile(r"từ (.+?) (?:đến|tới) (.+)")
 
 
+# Bug thật (user tự phát hiện): "máy phát điện rtg" bị hiểu nhầm thành
+# combustion-generator -- _find_building() cũ chỉ so khớp theo ĐỘ DÀI
+# chuỗi (dài nhất thắng), nên phrase generic "máy phát điện" (khớp thẳng
+# vào text) thắng trước khi kịp xét "rtg" (ngắn hơn nhiều) dù người dùng ĐÃ
+# nói rõ họ muốn loại nào -- khác hẳn "nhà máy điện hơi nước" (dài hơn
+# "nhà máy điện" vì cụm từ chứa NGUYÊN VẸN phrase gốc, cơ chế length-sort
+# vô tình đúng). "rtg" là hậu tố rời, không lồng trong bất kỳ phrase có sẵn
+# nào nên length-sort không cứu được.
+#
+# 7 generator audit "Power Blocks" xác nhận CHƯA hỗ trợ (xem NEXT_STEPS.md)
+# -- marker (từ khoá đặc trưng, không đụng ORE/LIQUID/ACTION_PHRASES nào
+# khác trong file) -> tên CATALOG thật. Check TRƯỚC vòng lặp BUILDING_PHRASES
+# thường (bất kể độ dài), để plan_build() báo lỗi rõ ràng thật sự CATALOG có
+# building đó (kind="power", category="power" -- xem
+# tools/generate_catalog.py SKIPPED) thay vì âm thầm xây nhầm generator mặc
+# định hoặc trả "unknown" mơ hồ.
+_UNSUPPORTED_GENERATOR_MARKERS = {
+    "rtg": "rtg-generator",
+    "thermal-generator": "thermal-generator",
+    "turbine-condenser": "turbine-condenser",
+    "turbine": "turbine-condenser",
+    "flux-reactor": "flux-reactor",
+    "flux": "flux-reactor",
+    "neoplasia": "neoplasia-reactor",
+    "vent-condenser": "vent-condenser",
+    "diode": "diode",
+    "điốt": "diode",
+}
+
+
 def _find_building(text: str):
+    for marker in sorted(_UNSUPPORTED_GENERATOR_MARKERS, key=len, reverse=True):
+        if marker in text:
+            return _UNSUPPORTED_GENERATOR_MARKERS[marker]
     for phrase in sorted(BUILDING_PHRASES, key=len, reverse=True):
         if phrase in text:
             return BUILDING_PHRASES[phrase]
@@ -178,6 +262,14 @@ _DRILL_NAMES = {
     # find_beam_drill_spot.
     "plasma-bore", "large-plasma-bore",
 }
+
+# 3 tier Pump.java thật (mechanical/rotary/impulse) -- trước đây mọi chỗ xử
+# lý liquid_target hardcode y nguyên chuỗi "mechanical-pump" (loại pump DUY
+# NHẤT có phrase lúc đó), khiến "bơm ly tâm nước"/"bơm xung lực nước" build
+# đúng building nhưng liquid_target luôn None (planner.py:1715 bắt lỗi ngay
+# "pump command needs a liquid_target"). Dùng set này ở MỌI chỗ từng hardcode
+# "mechanical-pump" cho liquid_target, để build KHÔNG lệ thuộc riêng 1 tên.
+_PUMP_NAMES = {"mechanical-pump", "rotary-pump", "impulse-pump"}
 
 # Bug thật (user tự phát hiện): "drill cấp 4 đào chì" bị âm thầm rớt về
 # sentinel "drill" -- không có phrase nào bắt SỐ tier, chỉ bắt được TÊN
@@ -229,7 +321,7 @@ def _find_hint(text: str, building: str = None):
         for phrase in sorted(ORE_PHRASES, key=len, reverse=True):
             if phrase in text:
                 return ("ore_target", ORE_PHRASES[phrase])
-    if building == "mechanical-pump":
+    if building in _PUMP_NAMES:
         liquid = _find_liquid(text)
         if liquid is not None:
             return ("liquid_target", liquid)
@@ -345,10 +437,18 @@ def parse_command(text: str) -> dict:
         if any(phrase in normalized for phrase in MERGE_PHRASES):
             command["merge"] = True
 
-    if action == "build" and building == "mechanical-pump":
+    if action == "build" and building in _PUMP_NAMES:
         liquid = _find_liquid(normalized)
         if liquid is not None:
             command["liquid_target"] = liquid
+        # User: "bot có biết tự đặt pump sát nhau ... không" -- "xây N máy
+        # bơm nước" giờ bắt được SỐ LƯỢNG (giống _GENERATOR_NAMES bên dưới),
+        # kích hoạt plan_build_pump_cluster (bot/planner.py) thay vì luôn
+        # đặt đúng 1 pump bất kể số nói ra bao nhiêu (bug thật đã verify
+        # trước khi sửa: "xây 5 máy bơm nước" trước đây bỏ qua hẳn số "5").
+        m = COUNT_RE.search(normalized)
+        if m:
+            command["count"] = int(m.group(1))
 
     if action == "build" and building in _GENERATOR_NAMES:
         m = COUNT_RE.search(normalized)
@@ -395,11 +495,14 @@ def parse_commands(text: str) -> list:
                             "ore_location_hint": _find_location_hint(normalized),
                         }
                         break
-            elif last_building == "mechanical-pump":
+            elif last_building in _PUMP_NAMES:
                 liquid = _find_liquid(normalized)
                 if liquid is not None:
                     command = {
-                        "action": "build", "building": "mechanical-pump", "liquid_target": liquid,
+                        # Kế thừa ĐÚNG loại pump của đoạn trước (vd "bơm ly
+                        # tâm nước, và dầu" -- đoạn "dầu" phải vẫn là
+                        # rotary-pump, không tự rớt về mechanical-pump).
+                        "action": "build", "building": last_building, "liquid_target": liquid,
                         "liquid_location_hint": _find_location_hint(normalized),
                     }
 
