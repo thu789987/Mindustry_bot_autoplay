@@ -523,6 +523,64 @@ def _build_power_networks(buildings):
     return {id(b): find(id(b)) for b in capable}
 
 
+def summarize_power_networks(grid: Grid) -> dict:
+    """Tóm tắt cấu trúc mạng điện hiện tại -- dùng cho bot/agent_loop.py
+    "quan sát" kết quả sau mỗi lần gọi plan() (xem NEXT_STEPS.md mục vòng
+    lặp agent). Trả dữ liệu CÓ CẤU TRÚC (test được bằng assert số liệu thật,
+    đúng kỷ luật test của dự án) -- format_power_summary() bên dưới mới
+    format thành text tiếng Việt cho LLM đọc. Dùng LẠI _build_power_networks
+    (không viết lại union-find)."""
+    buildings = grid.unique_buildings()
+    networks = _build_power_networks(buildings)
+    by_network = defaultdict(list)
+    for b in buildings:
+        net = networks.get(id(b))
+        if net is not None:
+            by_network[net].append(b)
+
+    clusters = []
+    for net_id, members in by_network.items():
+        cx = sum(b.x + b.type.size / 2.0 for b in members) / len(members)
+        cy = sum(b.y + b.type.size / 2.0 for b in members) / len(members)
+        clusters.append({"id": net_id, "building_count": len(members), "centroid": (cx, cy), "members": members})
+
+    closest_pair = None
+    best_gap = None
+    for i in range(len(clusters)):
+        for j in range(i + 1, len(clusters)):
+            for a in clusters[i]["members"]:
+                for b in clusters[j]["members"]:
+                    d = ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
+                    if best_gap is None or d < best_gap:
+                        best_gap = d
+                        closest_pair = {
+                            "a_network": clusters[i]["id"], "b_network": clusters[j]["id"],
+                            "gap": d, "from_pos": (a.x, a.y), "to_pos": (b.x, b.y),
+                        }
+
+    return {"network_count": len(clusters), "clusters": clusters, "closest_pair": closest_pair}
+
+
+def format_power_summary(summary: dict) -> str:
+    """Chuỗi ngắn tiếng Việt từ summarize_power_networks() -- nhét vào
+    system prompt của bot/agent_loop.py để LLM tự quyết định "tiến về
+    đâu"."""
+    n = summary["network_count"]
+    if n == 0:
+        return "Mạng điện: chưa có building nào tham gia mạng điện trên map."
+    if n == 1:
+        return f"Mạng điện: 1 mạng duy nhất ({summary['clusters'][0]['building_count']} building) -- không có đảo điện nào cần nối."
+    lines = [f"Mạng điện: {n} đảo RIÊNG BIỆT (chưa nối nhau):"]
+    for c in summary["clusters"]:
+        lines.append(f"  - mạng {c['id']}: {c['building_count']} building, quanh toạ độ ~({c['centroid'][0]:.0f},{c['centroid'][1]:.0f})")
+    cp = summary["closest_pair"]
+    lines.append(
+        f"Gần nhau nhất: mạng {cp['a_network']} và mạng {cp['b_network']}, khoảng cách ~{cp['gap']:.1f} ô "
+        f"(từ ({cp['from_pos'][0]},{cp['from_pos'][1]}) tới ({cp['to_pos'][0]},{cp['to_pos'][1]}))."
+    )
+    return "\n".join(lines)
+
+
 def _generator_power_rate(grid: Grid, b: PlacedBuilding, in_edges, branch_count, output_rate, liquid_in_edges, liquid_branch_count, liquid_output_rate):
     """Xấp xỉ PowerGenerator.java getPowerProduction() = powerProduction *
     productionEfficiency (đã nhân TICKS_PER_SECOND để ra công suất/giây).

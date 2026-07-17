@@ -73,6 +73,52 @@ def _select_tile(candidates, near, hint):
     return _nearest_tile(candidates, near)
 
 
+def _nearest_power_building(grid: Grid, near):
+    """Building có điện (generator/power-node/beam-node/battery) GẦN `near`
+    nhất -- dùng cho lệnh xây power-node/beam-node TRỰC TIẾP (xem
+    plan_build). Bug thật đã sửa: trước đây dùng next(...) (building ĐẦU
+    TIÊN theo thứ tự duyệt nội bộ của grid, KHÔNG phải gần nhất) -- khiến
+    gọi lệnh này lặp lại nhiều lần (vd vòng lặp agent bắc cầu 2 cụm điện xa
+    nhau) luôn bám đúng 1 cụm thay vì tiến dần về phía cụm khác."""
+    candidates = [b for b in grid.unique_buildings() if b.type.kind in ("generator", "power-node", "beam-node", "battery")]
+    if not candidates:
+        return None
+    nx, ny = near
+    return min(candidates, key=lambda b: abs(b.x - nx) + abs(b.y - ny))
+
+
+def _resolve_power_target(core_pos, hint):
+    """Suy ra 1 toạ độ THAM CHIẾU đích từ power_location_hint (cùng dạng trả
+    về _find_location_hint() trong command_parser.py) -- để lệnh xây
+    power-node/beam-node biết "tiến VỀ ĐÂU" thay vì luôn bám đúng 1 chỗ.
+    ("index", n) không áp dụng được (không có danh sách mỏ/tile cố định nào
+    để đánh số như ore/liquid) -- coi như không có hint, trả None."""
+    if hint is None:
+        return None
+    kind, value = hint
+    if kind == "coord":
+        return value
+    if kind == "direction":
+        origin = core_pos if core_pos is not None else (0, 0)
+        dx, dy = DIRECTIONS[value]
+        far = 200  # điểm ảo xa để xác định HƯỚNG, không phải toạ độ xây thật
+        return (origin[0] + dx * far, origin[1] + dy * far)
+    return None
+
+
+def _step_toward(from_pos, to_pos, max_step):
+    """1 bước thẳng từ from_pos hướng tới to_pos, xa tối đa max_step ô --
+    để MỖI lần gọi lệnh xây power-node/beam-node lặp lại THỰC SỰ tiến gần
+    hơn tới đích, không lặp lại đúng 1 vị trí (xem plan_build)."""
+    fx, fy = from_pos
+    tx, ty = to_pos
+    dist = ((tx - fx) ** 2 + (ty - fy) ** 2) ** 0.5
+    if dist <= max_step or dist == 0:
+        return (int(round(tx)), int(round(ty)))
+    ratio = max_step / dist
+    return (int(round(fx + (tx - fx) * ratio)), int(round(fy + (ty - fy) * ratio)))
+
+
 def find_unmined_ore(grid: Grid, item_name: str, near=None, hint=None):
     """Trước đây trả về ô ore ĐẦU TIÊN quét được (trên-trái xuống dưới-phải),
     không so khoảng cách -- bug thật: có 2 mỏ cùng loại, bot có thể chọn mỏ
@@ -994,6 +1040,36 @@ def _find_power_bridge_spot(grid: Grid, near, preferences: dict = None):
         if any(_power_linked(probe, other) for other in existing):
             return (x, y)
     return None
+
+
+def plan_bridge_power(grid: Grid, near, preferences: dict = None) -> list:
+    """Đặt 1 power-node GẦN `near` bắc cầu vào lưới điện có sẵn GẦN NHẤT --
+    phiên bản ĐỘC LẬP, gọi được trực tiếp (khác _find_power_bridge_spot, chỉ
+    dùng NỘI BỘ trong _ensure_powered khi bot tự xây building cần điện).
+
+    User: "Đặt từng tool vậy hơi cực... có cách nào tôi dạy AI item A này
+    dùng để nối dây điện, AI sẽ tự biết dùng nó để nối dây không?" --
+    KHÔNG viết riêng 1 thuật toán "bắc chuỗi qua khoảng cách xa" -- hàm này
+    CHỈ làm ĐÚNG 1 bước "bắc 1 nhịp" (khớp power_range thật của power-node,
+    6 ô). Muốn nối 2 cụm CÁCH XA (hơn 1 nhịp), bên GỌI (agent loop, xem
+    bot/agent_loop.py) phải tự gọi hàm này NHIỀU LẦN, mỗi lần `near` tiến
+    dần về phía cụm đích, dựa trên việc nó ĐÃ ĐƯỢC DẠY thuộc tính
+    power_range=6 (xem bot/agent_loop.py:_relevant_facts) -- đúng tinh thần
+    "dạy thuộc tính, không dạy thủ tục" đã bàn.
+
+    Raise lỗi rõ ràng nếu map CHƯA có building điện nào (không có gì để bắc
+    cầu vào), hoặc không tìm được chỗ trống trong tầm bất kỳ cái nào gần
+    `near`."""
+    spot = _find_power_bridge_spot(grid, near=near, preferences=preferences)
+    if spot is None:
+        existing = [b for b in grid.unique_buildings() if b.type.kind in ("generator", "power-node")]
+        if not existing:
+            raise RuntimeError("map chưa có generator/power-node nào cả -- không có lưới điện nào để bắc cầu vào")
+        raise RuntimeError(f"không tìm được chỗ đặt power-node bắc cầu gần {near} (không có lưới điện nào trong tầm)")
+    x, y = spot
+    node_type = CATALOG["power-node"]
+    grid.place(node_type, x, y, rotation=0)
+    return [{"op": "place", "building": node_type.name, "x": x, "y": y, "rotation": 0}]
 
 
 def _ensure_powered(grid: Grid, actions: list, building, near, scorer=None, preferences: dict = None):
@@ -1920,9 +1996,39 @@ def plan_build(grid: Grid, command: dict, scorer=None, preferences: dict = None)
         # điện (vd "xây thêm power-node" nối 2 cụm xa nhau), không chỉ auto-
         # đặt khi bắc cầu trong _ensure_powered. Đặt gần lưới điện có sẵn
         # nếu có, không thì đặt gần core.
+        #
+        # Bug thật đã sửa: trước đây LUÔN bám building điện ĐẦU TIÊN tìm
+        # thấy (next(...), không phải gần nhất) và KHÔNG nhận toạ độ/hướng
+        # mục tiêu nào -- khiến gọi lệnh này lặp lại (vd vòng lặp agent bắc
+        # cầu 2 cụm điện ở xa nhau qua nhiều power-node tiếp sức) luôn đặt
+        # quanh đúng 1 chỗ thay vì tiến dần về phía đích. Giờ: chọn building
+        # GẦN đích/near nhất (_nearest_power_building), và nếu có
+        # power_location_hint (command_parser.py, cùng cơ chế
+        # ore_location_hint/liquid_location_hint) thì BƯỚC 1 đoạn tối đa
+        # power_range về phía đích đó (_step_toward) thay vì đứng yên tại
+        # chỗ building cũ.
         near = core_pos if core_pos is not None else (0, 0)
-        existing_power = next((b for b in grid.unique_buildings() if b.type.kind in ("generator", "power-node", "beam-node", "battery")), None)
-        spot = find_free_area(grid, building_type, near=(existing_power.x, existing_power.y) if existing_power is not None else near, preferences=preferences)
+        hint = command.get("power_location_hint")
+        target_ref = _resolve_power_target(core_pos, hint)
+        existing_power = _nearest_power_building(grid, target_ref if target_ref is not None else near)
+        if existing_power is None:
+            anchor = near
+        elif target_ref is not None:
+            anchor = _step_toward((existing_power.x, existing_power.y), target_ref, building_type.power_range)
+            if building_type.kind == "beam-node":
+                # BeamNode.java chỉ nối THẲNG HÀNG (cùng x hoặc cùng y, xem
+                # sim.py:_power_linked) -- ép anchor thẳng hàng với
+                # existing_power trên trục GẦN đích hơn, để hop mới THẬT SỰ
+                # nối được (không chỉ "gần đích" mà còn đúng hình học
+                # BeamNode -- xấp xỉ, không đảm bảo tuyệt đối nếu chỗ đó bị
+                # vướng, xem NEXT_STEPS.md).
+                if abs(target_ref[0] - existing_power.x) >= abs(target_ref[1] - existing_power.y):
+                    anchor = (anchor[0], existing_power.y)
+                else:
+                    anchor = (existing_power.x, anchor[1])
+        else:
+            anchor = (existing_power.x, existing_power.y)
+        spot = find_free_area(grid, building_type, near=anchor, preferences=preferences)
         if spot is None:
             raise RuntimeError(f"không tìm được chỗ trống để đặt '{building_name}'")
         x, y = spot

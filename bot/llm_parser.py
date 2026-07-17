@@ -67,15 +67,17 @@ def _valid_factory_names():
     return sorted(name for name, b in CATALOG.items() if b.kind == "factory")
 
 
-def _system_prompt() -> str:
+def action_schema_text() -> str:
+    """Phần mô tả SCHEMA hành động (build/delete/rotate/reroute/configure/
+    split/filter_split + <dest> + hint) + whitelist tên building/factory
+    thật -- TÁCH RIÊNG khỏi _system_prompt() để bot/agent_loop.py (vòng lặp
+    agent, gọi lặp lại nhiều lần thay vì trả nguyên mảng 1 phát) dùng LẠI
+    đúng schema này thay vì chép trùng. Không đổi nội dung so với bản gộp
+    cũ trong _system_prompt() -- chỉ tách hàm, _system_prompt() gọi lại y
+    hệt bên dưới."""
     names = ", ".join(_valid_building_names())
     factory_names = ", ".join(_valid_factory_names())
     return (
-        "Bạn là bộ dịch lệnh cho 1 bot tự động xây dựng trong game Mindustry.\n"
-        "Đọc 1 câu tiếng Việt của người dùng (có thể ghép nhiều ý cùng lúc), "
-        "trả lời DUY NHẤT 1 JSON ARRAY các hành động theo đúng thứ tự người "
-        "dùng muốn thực hiện -- không thêm chữ giải thích, không thêm markdown "
-        "code fence. Câu chỉ có 1 ý thì trả mảng 1 phần tử.\n\n"
         "Mỗi phần tử trong mảng là 1 object theo action:\n\n"
         '- build:   {"action":"build","building":"<tên>","ore_target":"<item>"|null,"liquid_target":"<liquid>"|null}\n'
         "  (ore_target chỉ dùng khi building là drill; liquid_target chỉ dùng khi building là pump)\n\n"
@@ -113,7 +115,18 @@ def _system_prompt() -> str:
         '  {"kind":"ore_target","value":"<tên item>"}   (chỉ dùng được cho drill)\n'
         '  {"kind":"liquid_target","value":"<tên liquid>"}   (chỉ dùng được cho pump)\n'
         "  hoặc null nếu người dùng không nói gì để phân biệt.\n\n"
-        "Nếu 1 phần câu không hiểu được / không map vào action nào ở trên, BỎ QUA phần đó "
+    )
+
+
+def _system_prompt() -> str:
+    return (
+        "Bạn là bộ dịch lệnh cho 1 bot tự động xây dựng trong game Mindustry.\n"
+        "Đọc 1 câu tiếng Việt của người dùng (có thể ghép nhiều ý cùng lúc), "
+        "trả lời DUY NHẤT 1 JSON ARRAY các hành động theo đúng thứ tự người "
+        "dùng muốn thực hiện -- không thêm chữ giải thích, không thêm markdown "
+        "code fence. Câu chỉ có 1 ý thì trả mảng 1 phần tử.\n\n"
+        + action_schema_text()
+        + "Nếu 1 phần câu không hiểu được / không map vào action nào ở trên, BỎ QUA phần đó "
         "(không thêm phần tử nào cho nó vào mảng), không đoán bừa. Nếu KHÔNG hiểu được câu nào cả, trả mảng rỗng [].\n"
     )
 

@@ -130,6 +130,14 @@ BUILDING_PHRASES = {
     "beam-tower": "beam-tower",
     "cầu nối beam": "beam-link",
     "beam-link": "beam-link",
+    # Lỗ hổng thật phát hiện khi thiết kế vòng lặp agent (bot/agent_loop.py,
+    # xem NEXT_STEPS.md): power-node TRẦN (PowerNode.java thường, không
+    # phải beam-node/-tower/-link) trước đây HOÀN TOÀN không có phrase nào
+    # -- "xây power-node" không gõ được qua dict pipeline dù planner.py đã
+    # hỗ trợ đặt trực tiếp (chỉ đường LLM biết qua SUPPORTED_KINDS).
+    "trạm điện": "power-node",
+    "power-node": "power-node",
+    "power-node-large": "power-node-large",
 }
 
 # ore keyword (lowercase) -> item name in simulator.buildings.ITEMS, dùng khi
@@ -310,6 +318,13 @@ MERGE_PHRASES = (
 _GENERATOR_NAMES = {"combustion-generator", "steam-generator"}
 COUNT_RE = re.compile(r"\b(\d+)\b")
 
+# PowerNode.java/BeamNode.java -- lệnh xây power-node/beam-node TRỰC TIẾP
+# giờ nhận thêm toạ độ/hướng mục tiêu (power_location_hint, cùng cơ chế
+# ore_location_hint/liquid_location_hint đã có) để "tiến VỀ ĐÂU" thay vì
+# luôn bám đúng 1 cụm điện có sẵn -- cần cho vòng lặp agent (bot/agent_loop.py)
+# gọi lặp lại nhiều lần bắc cầu 2 cụm điện xa nhau, xem NEXT_STEPS.md.
+_POWER_NAMES = {"power-node", "power-node-large", "beam-node", "beam-tower", "beam-link"}
+
 
 def _find_hint(text: str, building: str = None):
     """Toạ độ, thứ tự, hoặc (với drill) loại ore để phân biệt khi có nhiều
@@ -455,6 +470,9 @@ def parse_command(text: str) -> dict:
         if m:
             command["count"] = int(m.group(1))
         command["liquid_location_hint"] = _find_location_hint(normalized)
+
+    if action == "build" and building in _POWER_NAMES:
+        command["power_location_hint"] = _find_location_hint(normalized)
 
     return command
 
